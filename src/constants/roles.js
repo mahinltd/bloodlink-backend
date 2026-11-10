@@ -1,0 +1,1 @@
+export const ADMIN_ROLES = ['superAdmin', 'moderator', 'contentEditor', 'viewer'];

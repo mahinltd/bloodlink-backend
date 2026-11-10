@@ -1,0 +1,47 @@
+{
+  "divisions": [
+    {
+      "nameBn": "ঢাকা", "nameEn": "Dhaka", "lat": 23.8103, "lng": 90.4125,
+      "districts": [
+        {
+          "nameBn": "ঢাকা", "nameEn": "Dhaka", "lat": 23.8103, "lng": 90.4125,
+          "upazilas": [
+            {
+              "nameBn": "সাভার", "nameEn": "Savar", "lat": 23.8583, "lng": 90.2667,
+              "unions": [
+                {
+                  "nameBn": "বিরুলিয়া", "nameEn": "Birulia",
+                  "villages": [
+                    { "nameBn": "বিরুলিয়া", "nameEn": "Birulia" },
+                    { "nameBn": "চর বিরুলিয়া", "nameEn": "Char Birulia" },
+                    { "nameBn": "ইছামতি", "nameEn": "Ichhamati" }
+                  ]
+                },
+                { "nameBn": "শিমুলিয়া", "nameEn": "Shimulia", "villages": [] },
+                { "nameBn": "তেঁতুলঝোড়া", "nameEn": "Tetuljhora", "villages": [] },
+                { "nameBn": "আমিনবাজার", "nameEn": "Aminbazar", "villages": [] }
+              ]
+            },
+            { "nameBn": "কেরানীগঞ্জ", "nameEn": "Keraniganj", "lat": 23.6946, "lng": 90.4126, "unions": [] },
+            { "nameBn": "দোহার", "nameEn": "Dohar", "lat": 23.6058, "lng": 90.1306, "unions": [] }
+          ]
+        },
+        { "nameBn": "গাজীপুর", "nameEn": "Gazipur", "lat": 24.0958, "lng": 90.4125, "upazilas": [] },
+        { "nameBn": "নারায়ণগঞ্জ", "nameEn": "Narayanganj", "lat": 23.6238, "lng": 90.5, "upazilas": [] }
+      ]
+    },
+    { "nameBn": "চট্টগ্রাম", "nameEn": "Chattogram", "lat": 22.3569, "lng": 91.7832, "districts": [] },
+    { "nameBn": "রাজশাহী", "nameEn": "Rajshahi", "lat": 24.3745, "lng": 88.6042, "districts": [] },
+    { "nameBn": "খুলনা", "nameEn": "Khulna", "lat": 22.8456, "lng": 89.5403, "districts": [] },
+    { "nameBn": "বরিশাল", "nameEn": "Barishal", "lat": 22.701, "lng": 90.3535, "districts": [] },
+    { "nameBn": "সিলেট", "nameEn": "Sylhet", "lat": 24.8949, "lng": 91.8687, "districts": [] },
+    { "nameBn": "রংপুর", "nameEn": "Rangpur", "lat": 25.7439, "lng": 89.2752, "districts": [] },
+    { "nameBn": "ময়মনসিংহ", "nameEn": "Mymensingh", "lat": 24.7471, "lng": 90.4203, "districts": [] }
+  ],
+  "hospitals": [
+    { "nameBn": "ঢাকা মেডিকেল কলেজ হাসপাতাল", "nameEn": "Dhaka Medical College Hospital", "lat": 23.7255, "lng": 90.3976, "districtEn": "Dhaka" },
+    { "nameBn": "বঙ্গবন্ধু শেখ মুজিব মেডিকেল বিশ্ববিদ্যালয়", "nameEn": "BSMMU", "lat": 23.7389, "lng": 90.3946, "districtEn": "Dhaka" },
+    { "nameBn": "স্যার সলিমুল্লাহ মেডিকেল কলেজ হাসপাতাল", "nameEn": "Sir Salimullah Medical College Hospital", "lat": 23.7106, "lng": 90.4075, "districtEn": "Dhaka" },
+    { "nameBn": "সাভার উপজেলা স্বাস্থ্য কমপ্লেক্স", "nameEn": "Savar Upazila Health Complex", "lat": 23.8486, "lng": 90.2531, "districtEn": "Dhaka", "upazilaEn": "Savar" }
+  ]
+}

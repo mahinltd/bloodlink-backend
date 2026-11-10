@@ -1,0 +1,46 @@
+{
+  "name": "bloodlink-backend",
+  "version": "1.0.0",
+  "description": "BloodLink - Blood donor-recipient platform - Backend API",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "seed": "node src/seed.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "bloodlink",
+    "blood-donation",
+    "bangladesh"
+  ],
+  "author": "BloodLink",
+  "license": "ISC",
+  "dependencies": {
+    "@sentry/node": "^11.11.0",
+    "bcrypt": "^6.0.0",
+    "cloudinary": "^2.11.0",
+    "compression": "^1.8.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^8.7.3",
+    "firebase-admin": "^14.5.0",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.12.0",
+    "morgan": "^1.12.1",
+    "multer": "^2.5.0",
+    "node-cron": "^4.6.0",
+    "resend": "^6.37.0",
+    "socket.io": "^4.8.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
