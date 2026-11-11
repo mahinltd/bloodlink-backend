@@ -220,105 +220,117 @@ const point = (lat, lng) =>
 
 export const importHierarchy = async ({ divisions = [], hospitals = [] }) => {
   const counters = { divisions: 0, districts: 0, upazilas: 0, unions: 0, villages: 0, hospitals: 0 };
+  const operations = (rows) => rows.map(({ filter, doc }) => ({
+    updateOne: { filter, update: { $set: doc }, upsert: true },
+  }));
+  const writeBulk = (Model, rows) => (rows.length ? Model.bulkWrite(operations(rows)) : Promise.resolve());
+  const idsBy = (rows, getKey) => new Map(rows.map((row) => [getKey(row), row._id]));
 
-  for (const div of divisions) {
-    const division = await Division.findOneAndUpdate(
-      { nameEn: div.nameEn },
-      { $set: { nameBn: div.nameBn, nameEn: div.nameEn, location: point(div.lat, div.lng) } },
-      { upsert: true, new: true }
-    );
-    counters.divisions += 1;
+  await writeBulk(Division, divisions.map((div) => ({
+    filter: { nameEn: div.nameEn },
+    doc: {
+      nameBn: div.nameBn,
+      nameEn: div.nameEn,
+      lat: div.lat ?? null,
+      lng: div.lng ?? null,
+      source: 'seed',
+    },
+  })));
+  const divisionDocs = await Division.find({ nameEn: { $in: divisions.map((div) => div.nameEn) } })
+    .select('nameEn')
+    .lean();
+  const divisionIds = idsBy(divisionDocs, (doc) => doc.nameEn);
 
-    for (const dist of div.districts || []) {
-      const district = await District.findOneAndUpdate(
-        { nameEn: dist.nameEn, divisionId: division._id },
-        { $set: { nameBn: dist.nameBn, nameEn: dist.nameEn, divisionId: division._id, location: point(dist.lat, dist.lng) } },
-        { upsert: true, new: true }
-      );
-      counters.districts += 1;
+  const districtRows = divisions.flatMap((div) => (div.districts || []).map((dist) => ({
+    divisionId: divisionIds.get(div.nameEn),
+    dist,
+  })));
+  await writeBulk(District, districtRows.map(({ divisionId, dist }) => ({
+    filter: { nameEn: dist.nameEn, divisionId },
+    doc: {
+      nameBn: dist.nameBn,
+      nameEn: dist.nameEn,
+      divisionId,
+      ...(point(dist.lat, dist.lng) ? { location: point(dist.lat, dist.lng) } : {}),
+    },
+  })));
+  const districtDocs = await District.find({ divisionId: { $in: [...divisionIds.values()] } })
+    .select('nameEn divisionId')
+    .lean();
+  const districtIds = idsBy(districtDocs, (doc) => `${doc.divisionId}:${doc.nameEn}`);
 
-      for (const upz of dist.upazilas || []) {
-        const upazila = await Upazila.findOneAndUpdate(
-          { nameEn: upz.nameEn, districtId: district._id },
-          { $set: { nameBn: upz.nameBn, nameEn: upz.nameEn, districtId: district._id, location: point(upz.lat, upz.lng) } },
-          { upsert: true, new: true }
-        );
-        counters.upazilas += 1;
+  const upazilaRows = districtRows.flatMap(({ divisionId, dist }) => (dist.upazilas || []).map((upz) => ({
+    districtId: districtIds.get(`${divisionId}:${dist.nameEn}`),
+    upz,
+  })));
+  await writeBulk(Upazila, upazilaRows.map(({ districtId, upz }) => ({
+    filter: { nameEn: upz.nameEn, districtId },
+    doc: {
+      nameBn: upz.nameBn,
+      nameEn: upz.nameEn,
+      districtId,
+      ...(point(upz.lat, upz.lng) ? { location: point(upz.lat, upz.lng) } : {}),
+    },
+  })));
+  const upazilaDocs = await Upazila.find({ districtId: { $in: [...districtIds.values()] } })
+    .select('nameEn districtId')
+    .lean();
+  const upazilaIds = idsBy(upazilaDocs, (doc) => `${doc.districtId}:${doc.nameEn}`);
 
-        for (const uni of upz.unions || []) {
-          const unionDoc = await Union.findOneAndUpdate(
-            { nameEn: uni.nameEn, upazilaId: upazila._id },
-            { $set: { nameBn: uni.nameBn, nameEn: uni.nameEn, upazilaId: upazila._id } },
-            { upsert: true, new: true }
-          );
-          counters.unions += 1;
-
-          for (const vil of uni.villages || []) {
-            await Village.findOneAndUpdate(
-              { unionId: unionDoc._id, nameBnNorm: normalizeName(vil.nameBn) },
-              {
-                $set: {
-                  nameBn: vil.nameBn,
-                  nameEn: vil.nameEn || null,
-                  nameBnNorm: normalizeName(vil.nameBn),
-                  nameEnNorm: vil.nameEn ? normalizeName(vil.nameEn) : null,
-                  unionId: unionDoc._id,
-                  source: 'seed',
-                  status: 'approved',
-                },
-              },
-              { upsert: true }
-            );
-            counters.villages += 1;
-          }
-        }
-
-        // উপজেলা-সরাসরি গ্রাম (ইউনিয়ন ছাড়া ডেটা থাকলে)
-        for (const vil of upz.villages || []) {
-          const catchAll = await Union.findOneAndUpdate(
-            { nameEn: 'Other', upazilaId: upazila._id },
-            { $set: { nameBn: 'অন্যান্য', nameEn: 'Other', upazilaId: upazila._id } },
-            { upsert: true, new: true }
-          );
-          await Village.findOneAndUpdate(
-            { unionId: catchAll._id, nameBnNorm: normalizeName(vil.nameBn) },
-            {
-              $set: {
-                nameBn: vil.nameBn,
-                nameEn: vil.nameEn || null,
-                nameBnNorm: normalizeName(vil.nameBn),
-                nameEnNorm: vil.nameEn ? normalizeName(vil.nameEn) : null,
-                unionId: catchAll._id,
-                source: 'seed',
-                status: 'approved',
-              },
-            },
-            { upsert: true }
-          );
-          counters.villages += 1;
-        }
-      }
+  const unionRows = upazilaRows.flatMap(({ districtId, upz }) => {
+    const upazilaId = upazilaIds.get(`${districtId}:${upz.nameEn}`);
+    const rows = (upz.unions || []).map((uni) => ({ upazilaId, uni }));
+    if (upz.villages?.length) {
+      rows.push({ upazilaId, uni: { nameBn: 'অন্যান্য', nameEn: 'Other', villages: upz.villages } });
     }
-  }
+    return rows;
+  });
+  await writeBulk(Union, unionRows.map(({ upazilaId, uni }) => ({
+    filter: { nameEn: uni.nameEn, upazilaId },
+    doc: { nameBn: uni.nameBn, nameEn: uni.nameEn, upazilaId },
+  })));
+  const unionDocs = await Union.find({ upazilaId: { $in: [...upazilaIds.values()] } })
+    .select('nameEn upazilaId')
+    .lean();
+  const unionIds = idsBy(unionDocs, (doc) => `${doc.upazilaId}:${doc.nameEn}`);
 
-  for (const hos of hospitals) {
-    await Hospital.findOneAndUpdate(
-      { nameBnNorm: normalizeName(hos.nameBn), districtId: null },
-      {
-        $set: {
-          nameBn: hos.nameBn,
-          nameEn: hos.nameEn || null,
-          nameBnNorm: normalizeName(hos.nameBn),
-          nameEnNorm: hos.nameEn ? normalizeName(hos.nameEn) : null,
-          location: point(hos.lat, hos.lng),
-          source: 'seed',
-          status: 'approved',
-        },
-      },
-      { upsert: true }
-    );
-    counters.hospitals += 1;
-  }
+  const villageRows = unionRows.flatMap(({ upazilaId, uni }) => (uni.villages || []).map((vil) => ({
+    unionId: unionIds.get(`${upazilaId}:${uni.nameEn}`),
+    vil,
+  })));
+  await writeBulk(Village, villageRows.map(({ unionId, vil }) => ({
+    filter: { unionId, nameBnNorm: normalizeName(vil.nameBn) },
+    doc: {
+      nameBn: vil.nameBn,
+      nameEn: vil.nameEn || null,
+      nameBnNorm: normalizeName(vil.nameBn),
+      nameEnNorm: vil.nameEn ? normalizeName(vil.nameEn) : null,
+      unionId,
+      source: 'seed',
+      status: 'approved',
+    },
+  })));
+
+  const hospitalOperations = hospitals.map((hos) => ({
+    filter: { nameBnNorm: normalizeName(hos.nameBn), districtId: null },
+    doc: {
+      nameBn: hos.nameBn,
+      nameEn: hos.nameEn || null,
+      nameBnNorm: normalizeName(hos.nameBn),
+      nameEnNorm: hos.nameEn ? normalizeName(hos.nameEn) : null,
+      location: point(hos.lat, hos.lng),
+      source: 'seed',
+      status: 'approved',
+    },
+  }));
+  await writeBulk(Hospital, hospitalOperations);
+
+  counters.divisions = divisions.length;
+  counters.districts = districtRows.length;
+  counters.upazilas = upazilaRows.length;
+  counters.unions = unionRows.length;
+  counters.villages = villageRows.length;
+  counters.hospitals = hospitals.length;
 
   return counters;
 };
