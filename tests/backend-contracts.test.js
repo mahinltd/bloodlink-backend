@@ -7,6 +7,9 @@ import { validate } from '../src/middlewares/validate.middleware.js';
 import { listNotificationsSchema, markReadSchema } from '../src/modules/notifications/notifications.validation.js';
 import { Release } from '../src/modules/releases/release.model.js';
 import { checkAppVersion } from '../src/modules/releases/releases.service.js';
+import { User } from '../src/modules/users/user.model.js';
+import { OtpCode } from '../src/modules/auth/otpCode.model.js';
+import { register } from '../src/modules/auth/auth.service.js';
 
 test('validated query defaults and transforms survive Express 5 query parsing', async () => {
   const app = express();
@@ -62,5 +65,43 @@ test('mandatory releases bypass rollout and staged releases require a device id'
     assert.equal(staged.reason, 'device_id_required');
   } finally {
     Release.findOne = originalFindOne;
+  }
+});
+
+test('registration rejects every existing email before updating the user or creating an OTP', async () => {
+  const originalFindOne = User.findOne;
+  const originalFindByIdAndUpdate = User.findByIdAndUpdate;
+  const originalOtpUpsert = OtpCode.findOneAndUpdate;
+  let queriedEmail;
+  let userUpdates = 0;
+  let otpUpserts = 0;
+
+  User.findOne = async (filter) => {
+    queriedEmail = filter.email;
+    return { _id: 'existing-user', status: 'unverified' };
+  };
+  User.findByIdAndUpdate = async () => {
+    userUpdates += 1;
+    return { _id: 'existing-user' };
+  };
+  OtpCode.findOneAndUpdate = async () => {
+    otpUpserts += 1;
+  };
+
+  try {
+    await assert.rejects(
+      register({ email: 'EXISTING@example.com', password: 'secure-password', role: 'requester' }, {}),
+      (error) =>
+        error.statusCode === 409 &&
+        error.code === 'EMAIL_ALREADY_EXISTS' &&
+        error.message === 'Email already registered'
+    );
+    assert.equal(queriedEmail, 'existing@example.com');
+    assert.equal(userUpdates, 0);
+    assert.equal(otpUpserts, 0);
+  } finally {
+    User.findOne = originalFindOne;
+    User.findByIdAndUpdate = originalFindByIdAndUpdate;
+    OtpCode.findOneAndUpdate = originalOtpUpsert;
   }
 });

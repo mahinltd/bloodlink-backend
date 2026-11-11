@@ -111,8 +111,8 @@ export const register = async (payload, req) => {
   const email = payload.email.toLowerCase();
   const existing = await User.findOne({ email });
 
-  if (existing && existing.status !== 'unverified') {
-    throw ApiError.conflict('An account with this email already exists', 'EMAIL_ALREADY_EXISTS');
+  if (existing) {
+    throw ApiError.conflict('Email already registered', 'EMAIL_ALREADY_EXISTS');
   }
 
   // ডোনার যোগ্যতা যাচাই (পরে admin config থেকে আসবে)
@@ -144,10 +144,7 @@ export const register = async (payload, req) => {
     status: 'unverified',
   };
 
-  // unverified অ্যাকাউন্টে আবার রেজিস্টার করলে তথ্য আপডেট + নতুন OTP
-  const user = existing
-    ? await User.findByIdAndUpdate(existing._id, userData, { new: true })
-    : await User.create(userData);
+  const user = await User.create(userData);
 
   if (payload.role === 'donor') {
     const d = payload.donor;
