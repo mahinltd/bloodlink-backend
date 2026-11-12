@@ -5,6 +5,7 @@ import { DonorProfile } from '../modules/users/donorProfile.model.js';
 import { User } from '../modules/users/user.model.js';
 import { buildUnsubscribeToken, notifyOne } from '../modules/notifications/notifications.service.js';
 import { sendEmail } from '../modules/notifications/email.service.js';
+import { renderBrandedEmail } from '../modules/notifications/emailTemplates.js';
 import { logger } from '../utils/logger.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -17,9 +18,9 @@ const sendEligibilityEmail = (user) => {
 	return sendEmail({
 		to: user.email,
 		subject: isBangla ? 'আপনি আবার রক্ত দিতে পারবেন' : 'You may be eligible to donate again',
-		html: isBangla
+		html: renderBrandedEmail({ content: isBangla
 			? `<p>আপনার রক্তদানের বিরতি শেষ হয়েছে। রক্তদানের আগে ব্লাড ব্যাংকের স্বাস্থ্য পরীক্ষা সম্পন্ন করুন।</p><p><a href="${unsubscribeUrl}">উৎসাহমূলক ইমেইল বন্ধ করুন</a></p>`
-			: `<p>Your donation interval has passed. Please complete the blood bank's health screening before donating.</p><p><a href="${unsubscribeUrl}">Unsubscribe from motivational emails</a></p>`,
+			: `<p>Your donation interval has passed. Please complete the blood bank's health screening before donating.</p><p><a href="${unsubscribeUrl}">Unsubscribe from motivational emails</a></p>` }),
 	});
 };
 

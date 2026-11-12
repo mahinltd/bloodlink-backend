@@ -17,6 +17,14 @@ const envSchema = z.object({
 
   RESEND_API_KEY: z.string().optional().or(z.literal('')),
   EMAIL_FROM: z.string().default('no-reply@bloodlink.tech'),
+  LOGO_URL: z
+    .string()
+    .url()
+    .refine((value) => value.startsWith('https://'), 'LOGO_URL must use HTTPS')
+    .optional()
+    .or(z.literal(''))
+    .default(''),
+  SUPPORT_EMAIL: z.email().optional().or(z.literal('')).default(''),
 
   CLOUDINARY_CLOUD_NAME: z.string().optional().or(z.literal('')),
   CLOUDINARY_API_KEY: z.string().optional().or(z.literal('')),

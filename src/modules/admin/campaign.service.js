@@ -4,6 +4,7 @@ import { User } from '../users/user.model.js';
 import { DonorProfile } from '../users/donorProfile.model.js';
 import { sendPushToUsers } from '../notifications/fcm.service.js';
 import { sendEmail } from '../notifications/email.service.js';
+import { renderBrandedEmail } from '../notifications/emailTemplates.js';
 import { buildUnsubscribeToken } from '../notifications/notifications.service.js';
 import { env } from '../../config/env.js';
 import { logAudit } from './admin.service.js';
@@ -27,7 +28,9 @@ const sendCampaignEmail = (user, campaign) => {
   return sendEmail({
     to: user.email,
     subject: title,
-    html: `<main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(body).replace(/\n/g, '<br>')}</p><footer><a href="${unsubscribeUrl}">Unsubscribe from BloodLink emails</a></footer></main>`,
+    html: renderBrandedEmail({
+      content: `<main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(body).replace(/\n/g, '<br>')}</p><footer><a href="${unsubscribeUrl}">Unsubscribe from BloodLink emails</a></footer></main>`,
+    }),
   });
 };
 

@@ -17,9 +17,12 @@ import { DonorProfile } from '../users/donorProfile.model.js';
 import { getBusinessRules } from '../config/config.service.js';
 import { resolveVillageName, touchVillageUsage } from '../locations/locations.service.js';
 import { OtpCode } from './otpCode.model.js';
+import { OtpSendLimit } from './otpSendLimit.model.js';
 import { RefreshToken } from './refreshToken.model.js';
 
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
+const OTP_RESENDS_PER_HOUR = 3;
+const OTP_RESEND_WINDOW_MS = 60 * 60 * 1000;
 
 const calcAge = (dob) =>
   Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000));
@@ -41,42 +44,182 @@ const isAvailableDonor = (donor, donationGapDays) => {
 
 /* ---------------- OTP helpers ---------------- */
 
-const createAndSendOtp = async (email, purpose) => {
+const createAndSendOtp = async (email, purpose, name) => {
+  const rules = await getBusinessRules();
+  const expiryMinutes = Number(rules.otp.ttlMinutes ?? 10);
+  if (!Number.isInteger(expiryMinutes) || expiryMinutes < 1) {
+    throw ApiError.internal('Invalid OTP expiry configuration', 'INVALID_OTP_CONFIG');
+  }
   const code = generateOtp();
-  // deleteMany + create এর বদলে atomic upsert — দুটি OTP ডকুমেন্ট কখনোই হবে না
   await OtpCode.findOneAndUpdate(
     { email, purpose },
     {
       $set: {
         codeHash: hashOtp(code, email, purpose),
         attempts: 0,
-        expiresAt: otpExpiresAt(),
+        expiresAt: otpExpiresAt(expiryMinutes),
       },
     },
     { upsert: true, setDefaultsOnInsert: true }
   );
-  await sendOtpEmail(email, code, purpose);
+  await sendOtpEmail(email, code, purpose, { name, expiryMinutes });
 };
 
 const verifyOtp = async (email, purpose, code) => {
   const rules = await getBusinessRules();
-  const record = await OtpCode.findOne({ email, purpose }).sort({ createdAt: -1 });
-  if (!record) throw ApiError.badRequest('OTP not found. Please request a new code.', 'OTP_NOT_FOUND');
+  const record = await OtpCode.findOne({ email, purpose });
+  if (!record) throw ApiError.badRequest('OTP not found or already used. Please request a new code.', 'OTP_NOT_FOUND');
 
   if (record.attempts >= rules.otp.maxAttempts) {
-    await OtpCode.deleteOne({ _id: record._id });
+    await OtpCode.deleteOne({
+      _id: record._id,
+      codeHash: record.codeHash,
+      attempts: { $gte: rules.otp.maxAttempts },
+    });
     throw ApiError.badRequest('Too many wrong attempts. Please request a new code.', 'OTP_MAX_ATTEMPTS');
   }
-  if (record.expiresAt.getTime() < Date.now()) {
-    await OtpCode.deleteOne({ _id: record._id });
+  const now = new Date();
+  if (record.expiresAt.getTime() <= now.getTime()) {
+    await OtpCode.deleteOne({
+      _id: record._id,
+      codeHash: record.codeHash,
+      expiresAt: { $lte: now },
+    });
     throw ApiError.badRequest('OTP has expired. Please request a new code.', 'OTP_EXPIRED');
   }
-  if (record.codeHash !== hashOtp(code, email, purpose)) {
-    record.attempts += 1;
-    await record.save();
+
+  const codeHash = hashOtp(code, email, purpose);
+  if (record.codeHash !== codeHash) {
+    const updated = await OtpCode.findOneAndUpdate(
+      {
+        _id: record._id,
+        codeHash: record.codeHash,
+        attempts: { $lt: rules.otp.maxAttempts },
+        expiresAt: { $gt: now },
+      },
+      { $inc: { attempts: 1 } },
+      { new: true }
+    );
+    if (!updated) {
+      const current = await OtpCode.findById(record._id);
+      if (!current || current.codeHash !== record.codeHash) {
+        throw ApiError.badRequest('Invalid OTP code. Please check the code or request a new one.', 'OTP_INVALID');
+      }
+      if (current.expiresAt.getTime() <= Date.now()) {
+        await OtpCode.deleteOne({
+          _id: record._id,
+          codeHash: record.codeHash,
+          expiresAt: { $lte: new Date() },
+        });
+        throw ApiError.badRequest('OTP has expired or was already used. Please request a new code.', 'OTP_EXPIRED');
+      }
+      await OtpCode.deleteOne({
+        _id: record._id,
+        codeHash: record.codeHash,
+        attempts: { $gte: rules.otp.maxAttempts },
+      });
+      throw ApiError.badRequest('Too many wrong attempts. Please request a new code.', 'OTP_MAX_ATTEMPTS');
+    }
+    if (updated.attempts >= rules.otp.maxAttempts) {
+      await OtpCode.deleteOne({
+        _id: updated._id,
+        codeHash: record.codeHash,
+        attempts: { $gte: rules.otp.maxAttempts },
+      });
+      throw ApiError.badRequest('Too many wrong attempts. Please request a new code.', 'OTP_MAX_ATTEMPTS');
+    }
     throw ApiError.badRequest('Invalid OTP code.', 'OTP_INVALID');
   }
-  await OtpCode.deleteOne({ _id: record._id });
+
+  const consumed = await OtpCode.findOneAndDelete({
+    _id: record._id,
+    codeHash,
+    attempts: { $lt: rules.otp.maxAttempts },
+    expiresAt: { $gt: now },
+  });
+  if (!consumed) {
+    throw ApiError.badRequest('OTP not found or already used. Please request a new code.', 'OTP_INVALID');
+  }
+};
+
+const recordOtpResend = async (email, cooldownSec) => {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - OTP_RESEND_WINDOW_MS);
+  const recentSends = {
+    $filter: {
+      input: { $ifNull: ['$sentAt', []] },
+      as: 'sentAt',
+      cond: { $gt: ['$$sentAt', { $literal: cutoff }] },
+    },
+  };
+  const sendCount = { $size: recentSends };
+  const allowed = {
+    $expr: {
+      $and: [
+        { $lt: [sendCount, OTP_RESENDS_PER_HOUR] },
+        {
+          $cond: {
+            if: { $eq: [sendCount, 0] },
+            then: true,
+            else: {
+              $gte: [
+                { $subtract: [{ $literal: now }, { $arrayElemAt: [recentSends, -1] }] },
+                cooldownSec * 1000,
+              ],
+            },
+          },
+        },
+      ],
+    },
+  };
+
+  const recordExistingLimit = () =>
+    OtpSendLimit.findOneAndUpdate(
+      { _id: email, ...allowed },
+      [
+        {
+          $set: {
+            sentAt: { $concatArrays: [recentSends, [{ $literal: now }]] },
+            expiresAt: { $literal: new Date(now.getTime() + OTP_RESEND_WINDOW_MS) },
+          },
+        },
+      ],
+      { new: true, timestamps: false }
+    );
+
+  let recorded = await recordExistingLimit();
+  if (recorded) return;
+
+  try {
+    await OtpSendLimit.create({
+      _id: email,
+      sentAt: [now],
+      expiresAt: new Date(now.getTime() + OTP_RESEND_WINDOW_MS),
+    });
+    return;
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+    recorded = await recordExistingLimit();
+    if (recorded) return;
+  }
+
+  const limit = await OtpSendLimit.findById(email).lean();
+  if (!limit) {
+    throw ApiError.internal('Could not record OTP resend limit', 'OTP_RESEND_LIMIT_FAILED');
+  }
+  const recent = limit.sentAt
+    .filter((timestamp) => timestamp.getTime() > cutoff.getTime())
+    .sort((left, right) => left.getTime() - right.getTime());
+  const latest = recent[recent.length - 1];
+  if (latest && now.getTime() - latest.getTime() < cooldownSec * 1000) {
+    const waitSec = Math.ceil((cooldownSec * 1000 - (now.getTime() - latest.getTime())) / 1000);
+    throw ApiError.tooMany(`Please wait ${waitSec}s before requesting a new code`, 'OTP_RESEND_TOO_SOON');
+  }
+  if (recent.length >= OTP_RESENDS_PER_HOUR) {
+    const waitMinutes = Math.ceil((recent[0].getTime() + OTP_RESEND_WINDOW_MS - now.getTime()) / 60000);
+    throw ApiError.tooMany(`Too many code requests. Please try again in ${waitMinutes} minute(s).`, 'OTP_RESEND_LIMIT');
+  }
+  throw ApiError.internal('Could not record OTP resend limit', 'OTP_RESEND_LIMIT_FAILED');
 };
 
 /* ---------------- Token helpers ---------------- */
@@ -187,7 +330,7 @@ export const register = async (payload, req) => {
     );
   }
 
-  await createAndSendOtp(email, 'verify_email');
+  await createAndSendOtp(email, 'verify_email', payload.name);
   return { email, requiresEmailVerification: true };
 };
 
@@ -217,18 +360,9 @@ export const resendOtp = async ({ email, purpose }) => {
     throw ApiError.badRequest('Email is already verified', 'ALREADY_VERIFIED');
   }
 
-  // ৬০ সেকেন্ড কুলডাউন (updatedAt = সর্বশেষ OTP পাঠানোর সময়)
-  const last = await OtpCode.findOne({ email: normalized, purpose });
   const rules = await getBusinessRules();
-  const cooldown = rules.otp.resendCooldownSec;
-  if (last) {
-    const elapsed = (Date.now() - last.updatedAt.getTime()) / 1000;
-    if (elapsed < cooldown) {
-      throw ApiError.tooMany(`Please wait ${Math.ceil(cooldown - elapsed)}s before requesting a new code`, 'OTP_RESEND_TOO_SOON');
-    }
-  }
-
-  await createAndSendOtp(normalized, purpose);
+  await recordOtpResend(normalized, rules.otp.resendCooldownSec);
+  await createAndSendOtp(normalized, purpose, user.name);
   return { sent: true };
 };
 
@@ -312,7 +446,9 @@ export const forgotPassword = async ({ email }) => {
 
   if (!user || user.status === 'deleted') return { sent: true }; // enumeration protection
 
-  await createAndSendOtp(normalized, 'reset_password');
+  const rules = await getBusinessRules();
+  await recordOtpResend(normalized, rules.otp.resendCooldownSec);
+  await createAndSendOtp(normalized, 'reset_password', user.name);
   return { sent: true };
 };
 

@@ -10,6 +10,8 @@ import { checkAppVersion } from '../src/modules/releases/releases.service.js';
 import { User } from '../src/modules/users/user.model.js';
 import { OtpCode } from '../src/modules/auth/otpCode.model.js';
 import { register } from '../src/modules/auth/auth.service.js';
+import { renderVerificationEmail } from '../src/modules/notifications/emailTemplates.js';
+import { generateOtp } from '../src/utils/otp.util.js';
 
 test('validated query defaults and transforms survive Express 5 query parsing', async () => {
   const app = express();
@@ -103,5 +105,32 @@ test('registration rejects every existing email before updating the user or crea
     User.findOne = originalFindOne;
     User.findByIdAndUpdate = originalFindByIdAndUpdate;
     OtpCode.findOneAndUpdate = originalOtpUpsert;
+  }
+});
+
+test('verification email renders an escaped first name and the spaced six-digit code in both parts', () => {
+  const { html, text } = renderVerificationEmail({
+    name: '<script>alert(1)</script> Rahman',
+    code: '048291',
+    expiryMinutes: 10,
+    logoUrl: 'https://cdn.example.test/bloodlink-logo.png',
+    supportEmail: 'help@bloodlink.example',
+    year: 2026,
+  });
+
+  assert.doesNotMatch(html, /\{\{/);
+  assert.doesNotMatch(text, /\{\{/);
+  assert.match(html, /048 291/);
+  assert.match(text, /048 291/);
+  assert.match(html, /Hello &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/i);
+  assert.match(html, /https:\/\/cdn\.example\.test\/bloodlink-logo\.png/);
+  assert.doesNotMatch(html, /href=/i);
+  assert.match(text, /expires in 10 minutes/);
+});
+
+test('generated OTPs are always six numeric digits, including leading-zero values', () => {
+  for (let index = 0; index < 100; index += 1) {
+    assert.match(generateOtp(), /^\d{6}$/);
   }
 });
