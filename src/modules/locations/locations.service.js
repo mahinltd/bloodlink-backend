@@ -16,14 +16,17 @@ const PARENT_FIELD = { district: 'divisionId', upazila: 'districtId', union: 'up
 
 /* ---------------- তালিকা (সিঙ্ক সহ) ---------------- */
 
-export const listChildren = async (key, { parentId, q, since, limit }) => {
+export const listChildren = async (key, { parentId, upazilaId, q, since, limit }) => {
   const Model = MODELS[key];
   const filter = { isActive: true };
 
   const parentField = PARENT_FIELD[key];
   if (parentField) {
-    if (!parentId) throw ApiError.badRequest('parentId is required', 'PARENT_REQUIRED');
-    filter[parentField] = parentId;
+    const resolvedParentId = parentId || (key === 'union' ? upazilaId : undefined);
+    if (!resolvedParentId) {
+      throw ApiError.badRequest(key === 'union' ? 'parentId or upazilaId is required' : 'parentId is required', 'PARENT_REQUIRED');
+    }
+    filter[parentField] = resolvedParentId;
   }
   if (since) filter.updatedAt = { $gt: since };
   if (q) {
@@ -35,8 +38,9 @@ export const listChildren = async (key, { parentId, q, since, limit }) => {
   return { items };
 };
 
-export const listVillages = async ({ parentId, q, since, limit }, userId) => {
-  if (!parentId) throw ApiError.badRequest('parentId (unionId) is required', 'PARENT_REQUIRED');
+export const listVillages = async ({ parentId, unionId: requestedUnionId, q, since, limit }, userId) => {
+  const unionId = parentId || requestedUnionId;
+  if (!unionId) throw ApiError.badRequest('parentId or unionId is required', 'PARENT_REQUIRED');
 
   // সবাই: approved; লগইন করা ব্যবহারকারী: নিজের pending-ও দেখবে (রোডম্যাপ পর্ব ৯)
   const visibilityOr = [{ status: 'approved' }];
@@ -49,7 +53,7 @@ export const listVillages = async ({ parentId, q, since, limit }, userId) => {
   }
   if (since) andConditions.push({ updatedAt: { $gt: since } });
 
-  const items = await Village.find({ unionId: parentId, isActive: true, $and: andConditions })
+  const items = await Village.find({ unionId, isActive: true, $and: andConditions })
     .select('nameBn nameEn unionId source status usageCount updatedAt')
     .sort({ usageCount: -1, nameBn: 1 })
     .limit(limit)

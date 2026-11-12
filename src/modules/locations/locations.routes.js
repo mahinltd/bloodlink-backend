@@ -8,8 +8,8 @@ const locationRoutes = Router();
 locationRoutes.get('/divisions', validate(v.childrenQuerySchema), ctrl.getDivisions);
 locationRoutes.get('/districts', validate(v.childrenQuerySchema), ctrl.getDistricts);
 locationRoutes.get('/upazilas', validate(v.childrenQuerySchema), ctrl.getUpazilas);
-locationRoutes.get('/unions', validate(v.childrenQuerySchema), ctrl.getUnions);
-locationRoutes.get('/villages', optionalAuth, validate(v.childrenQuerySchema), ctrl.getVillages);
+locationRoutes.get('/unions', validate(v.unionsQuerySchema), ctrl.getUnions);
+locationRoutes.get('/villages', optionalAuth, validate(v.villagesQuerySchema), ctrl.getVillages);
 locationRoutes.post('/villages', protect, validate(v.createVillageSchema), ctrl.createVillage);
 
 const hospitalRoutes = Router();

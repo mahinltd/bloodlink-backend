@@ -2,14 +2,30 @@ import { z } from 'zod';
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
 
-export const childrenQuerySchema = z.object({
-  query: z.object({
-    parentId: objectId.optional(),
-    q: z.string().trim().max(80).optional(),
-    since: z.coerce.date().optional(), // ডেল্টা সিঙ্ক (অ্যাপ ক্যাশ)
-    limit: z.coerce.number().int().min(1).max(1000).default(500),
-  }),
+const childrenQuery = z.object({
+  parentId: objectId.optional(),
+  q: z.string().trim().max(80).optional(),
+  since: z.coerce.date().optional(), // ডেল্টা সিঙ্ক (অ্যাপ ক্যাশ)
+  limit: z.coerce.number().int().min(1).max(1000).default(500),
 });
+
+export const childrenQuerySchema = z.object({ query: childrenQuery });
+
+const withParentAlias = (alias) =>
+  z.object({
+    query: childrenQuery.extend({ [alias]: objectId.optional() }).superRefine((query, context) => {
+      if (query.parentId && query[alias] && query.parentId !== query[alias]) {
+        context.addIssue({
+          code: 'custom',
+          path: [alias],
+          message: `parentId and ${alias} must match when both are supplied`,
+        });
+      }
+    }),
+  });
+
+export const unionsQuerySchema = withParentAlias('upazilaId');
+export const villagesQuerySchema = withParentAlias('unionId');
 
 export const createVillageSchema = z.object({
   body: z.object({
