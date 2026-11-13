@@ -19,6 +19,7 @@ import {
   createRequest,
   getRequest,
   listRequests,
+  listRespondedRequests,
   listSosRequests,
 } from '../src/modules/requests/requests.service.js';
 import { BloodRequest } from '../src/modules/requests/bloodRequest.model.js';
@@ -37,6 +38,7 @@ import { unionsQuerySchema, villagesQuerySchema } from '../src/modules/locations
 import { donorProfileSchema } from '../src/modules/users/users.validation.js';
 import { registerSchema } from '../src/modules/auth/auth.validation.js';
 import { listRequestsSchema } from '../src/modules/requests/requests.validation.js';
+import { searchDonorsSchema } from '../src/modules/donors/donors.validation.js';
 
 test('validated query defaults and transforms survive Express 5 query parsing', async () => {
   const app = express();
@@ -387,6 +389,101 @@ test('feed and SOS query validation requires coordinate pairs and nearest coordi
   assert.equal(listRequestsSchema.safeParse({ query: { component: 'platelets', sort: 'newest' } }).success, true);
 });
 
+test('donor search query parses privacy-safe filters and requires coordinates for nearest sorting', () => {
+  const parsed = searchDonorsSchema.parse({
+    query: {
+      bloodGroup: 'A+',
+      compatible: 'true',
+      availableOnly: 'false',
+      eligibleOnly: 'false',
+      lat: '23.7',
+      lng: '90.4',
+      radiusKm: '25',
+      sort: 'nearest',
+    },
+  });
+  assert.equal(parsed.query.compatible, true);
+  assert.equal(parsed.query.availableOnly, false);
+  assert.equal(parsed.query.eligibleOnly, false);
+  assert.equal(parsed.query.radiusKm, 25);
+  assert.equal(searchDonorsSchema.safeParse({ query: { compatible: 'true' } }).success, false);
+  assert.equal(searchDonorsSchema.safeParse({ query: { lat: 23.7 } }).success, false);
+});
+
+test('donor directory applies compatibility, location, radius and last-donation privacy', async () => {
+  const originalConfigFindOne = AppConfig.findOne;
+  const originalAggregate = DonorProfile.aggregate;
+  const pipelines = [];
+  const lastDonationDate = new Date('2025-01-01T00:00:00Z');
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({ businessRules: {} }),
+  });
+  DonorProfile.aggregate = async (pipeline) => {
+    pipelines.push(pipeline);
+    return pipeline.some((stage) => stage.$count)
+      ? [{ total: 25 }]
+      : [{
+          userId: 'donor-id',
+          user: {
+            name: 'Donor',
+            avatar: null,
+            phone: '01712345678',
+            privacy: { showLastDonation: true },
+          },
+          bloodGroup: 'O+',
+          isAvailable: false,
+          lastDonationDate,
+          healthDeclaration: {},
+          distanceMeters: 2400,
+          division: [{ nameBn: 'ঢাকা', nameEn: 'Dhaka' }],
+          district: [],
+          upazila: [],
+          union: [],
+        }];
+  };
+  invalidateConfigCache();
+
+  try {
+    const data = await searchDonors({
+      bloodGroup: 'A+',
+      compatible: true,
+      divisionId: '6af4b2c56bce675945a7eb7d',
+      districtId: '6af4b2c56bce675945a7eb7e',
+      upazilaId: '6af4b2c56bce675945a7eb7f',
+      unionId: '6af4b2c56bce675945a7eb80',
+      availableOnly: false,
+      eligibleOnly: false,
+      lat: 23.7,
+      lng: 90.4,
+      radiusKm: 25,
+      sort: 'recently_active',
+      page: 2,
+      limit: 10,
+    }, '6af4b2c56bce675945a7eb7e');
+    const geoMatch = pipelines[0][0].$geoNear;
+    assert.equal(geoMatch.maxDistance, 25000);
+    assert.deepEqual(geoMatch.query.bloodGroup.$in, ['A+', 'A-', 'O+', 'O-']);
+    assert.equal(geoMatch.query.divisionId.toString(), '6af4b2c56bce675945a7eb7d');
+    assert.deepEqual(pipelines[0].find((stage) => stage.$sort).$sort, {
+      'user.lastSeen': -1,
+      updatedAt: -1,
+    });
+    assert.equal(data.total, 25);
+    assert.equal(data.hasMore, true);
+    assert.equal(data.items[0].lastDonationDate, lastDonationDate);
+    assert.equal(data.items[0].area.division.en, 'Dhaka');
+    assert.equal(data.items[0].distanceKm, 2.4);
+    assert.equal('location' in data.items[0], false);
+  } finally {
+    AppConfig.findOne = originalConfigFindOne;
+    DonorProfile.aggregate = originalAggregate;
+    invalidateConfigCache();
+  }
+});
+
 test('legacy urgentThresholdHours no longer overrides SOS and urgent windows', async () => {
   const originalFindOne = AppConfig.findOne;
   AppConfig.findOne = () => ({
@@ -488,13 +585,17 @@ test('donor and request phones are available to verified viewers regardless of l
       return this;
     },
   });
-  DonorProfile.aggregate = async () => [{
-    userId,
-    user: { name: 'Donor', avatar: null, phone },
-    bloodGroup: 'A+',
-    isAvailable: true,
-    createdAt: new Date(),
-  }];
+  DonorProfile.aggregate = async (pipeline) => pipeline.some((stage) => stage.$count)
+    ? [{ total: 1 }]
+    : [{
+        userId,
+        user: { name: 'Donor', avatar: null, phone, privacy: { showLastDonation: false } },
+        bloodGroup: 'A+',
+        isAvailable: true,
+        lastDonationDate: null,
+        healthDeclaration: {},
+        createdAt: new Date(),
+      }];
   User.findById = () => ({
     select() {
       return this;
@@ -535,8 +636,12 @@ test('donor and request phones are available to verified viewers regardless of l
   invalidateConfigCache();
 
   try {
-    const donors = await searchDonors({ page: 1, limit: 20 }, viewerId);
+    const donors = await searchDonors({ page: 1, limit: 20, availableOnly: false, eligibleOnly: false }, viewerId);
     assert.equal(donors.items[0].phone, phone);
+    assert.equal(donors.total, 1);
+    assert.equal(donors.hasMore, false);
+    assert.equal('location' in donors.items[0], false);
+    assert.equal('lastDonationDate' in donors.items[0], false);
     const donor = await getDonor(userId, viewerId, {});
     assert.equal(donor.donor.phone, phone);
     assert.equal(await revealPhone(viewerId, userId).then((result) => result.phone), phone);
@@ -552,6 +657,41 @@ test('donor and request phones are available to verified viewers regardless of l
     RequestResponse.countDocuments = originals.responseCount;
     RequestResponse.findOne = originals.responseFindOne;
     invalidateConfigCache();
+  }
+});
+
+test('responded requests are paginated and retain the donor response status', async () => {
+  const originalAggregate = RequestResponse.aggregate;
+  const originalPopulate = BloodRequest.populate;
+  let pipeline;
+  RequestResponse.aggregate = async (value) => {
+    pipeline = value;
+    return [{
+      items: [{
+        _id: 'response-id',
+        status: 'accepted',
+        respondedAt: new Date('2026-01-01T00:00:00Z'),
+        request: { _id: 'request-id', attendantPhone: '01712345678' },
+      }],
+      total: [{ count: 21 }],
+    }];
+  };
+  BloodRequest.populate = async (items) => items;
+
+  try {
+    const data = await listRespondedRequests('6af4b2c56bce675945a7eb7e', { page: 2, limit: 10 });
+    assert.deepEqual(
+      pipeline.find((stage) => stage.$match?.['request.isHidden'])?.$match['request.isHidden'],
+      { $ne: true }
+    );
+    assert.equal(pipeline[pipeline.length - 1].$facet.items[0].$skip, 10);
+    assert.equal(data.items[0].status, 'accepted');
+    assert.equal(data.items[0].request.attendantPhone, '01712345678');
+    assert.equal(data.total, 21);
+    assert.equal(data.hasMore, true);
+  } finally {
+    RequestResponse.aggregate = originalAggregate;
+    BloodRequest.populate = originalPopulate;
   }
 });
 

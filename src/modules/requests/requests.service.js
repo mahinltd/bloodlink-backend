@@ -238,6 +238,60 @@ export const listMine = async (userId, { page, limit }) => {
   return { items, page, limit };
 };
 
+export const listRespondedRequests = async (userId, { page, limit }) => {
+  const [result] = await RequestResponse.aggregate([
+    { $match: { donorId: new mongoose.Types.ObjectId(userId) } },
+    {
+      $lookup: {
+        from: BloodRequest.collection.name,
+        localField: 'requestId',
+        foreignField: '_id',
+        as: 'request',
+      },
+    },
+    { $unwind: '$request' },
+    { $match: { 'request.isHidden': { $ne: true } } },
+    {
+      $lookup: {
+        from: User.collection.name,
+        localField: 'request.requesterId',
+        foreignField: '_id',
+        as: '_requester',
+      },
+    },
+    { $match: { '_requester.status': 'active', '_requester.emailVerifiedAt': { $ne: null } } },
+    {
+      $addFields: {
+        'request.requesterId': {
+          _id: { $arrayElemAt: ['$_requester._id', 0] },
+          name: { $arrayElemAt: ['$_requester.name', 0] },
+          avatar: { $arrayElemAt: ['$_requester.avatar', 0] },
+        },
+      },
+    },
+    { $sort: { respondedAt: -1 } },
+    {
+      $facet: {
+        items: [
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          { $project: { _requester: 0 } },
+        ],
+        total: [{ $count: 'count' }],
+      },
+    },
+  ]);
+  const items = result?.items || [];
+  const total = result?.total?.[0]?.count || 0;
+  return {
+    items: items.map(({ _id, status, respondedAt, request }) => ({ id: _id, status, respondedAt, request })),
+    page,
+    limit,
+    total,
+    hasMore: page * limit < total,
+  };
+};
+
 export const getRequest = async (id, userId) => {
   const request = await BloodRequest.findById(id)
     .populate({

@@ -12,6 +12,7 @@ requestRoutes.get('/sos', requestFeedLimiter, validate(v.sosRequestsSchema), con
 requestRoutes.get('/', requestFeedLimiter, validate(v.listRequestsSchema), controller.list);
 requestRoutes.post('/', validate(v.createRequestSchema), controller.create);
 requestRoutes.get('/mine', validate(v.paginationSchema), controller.listMine);
+requestRoutes.get('/responded', requestFeedLimiter, validate(v.paginationSchema), controller.listResponded);
 requestRoutes.get('/:id/matching-preview', validate(v.idParamSchema), controller.matchingPreview);
 requestRoutes.get('/:id/responses', requestFeedLimiter, validate(v.idParamSchema), controller.listResponses);
 requestRoutes.post('/:id/respond', validate(v.respondSchema), controller.respond);

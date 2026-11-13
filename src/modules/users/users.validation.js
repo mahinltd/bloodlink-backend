@@ -82,6 +82,7 @@ export const settingsSchema = z.object({
     privacy: z
       .object({
         showPhone: z.enum(['on_response', 'always', 'never']).optional(),
+        showLastDonation: z.boolean().optional(),
       })
       .optional(),
   }),

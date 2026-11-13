@@ -31,6 +31,7 @@ const userSchema = new Schema(
     },
     privacy: {
       showPhone: { type: String, enum: ['on_response', 'always', 'never'], default: 'on_response' },
+      showLastDonation: { type: Boolean, default: false },
     },
     consents: {
       termsAcceptedAt: { type: Date, default: null },

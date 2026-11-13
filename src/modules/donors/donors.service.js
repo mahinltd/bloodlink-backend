@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import ApiError from '../../utils/ApiError.js';
+import { COMPATIBLE_DONORS } from '../../constants/bloodGroups.js';
 import { DonorProfile } from '../users/donorProfile.model.js';
 import { User } from '../users/user.model.js';
 import { getBusinessRules } from '../config/config.service.js';
@@ -29,23 +30,30 @@ export const searchDonors = async (query, viewerId) => {
   const rules = await getBusinessRules();
   const gapDays = rules.donor?.donationGapDays ?? 120;
   const cutoff = new Date(Date.now() - gapDays * DAY);
+  const {
+    bloodGroup, compatible, availableOnly = true, eligibleOnly = true,
+    divisionId, districtId, upazilaId, unionId, villageId,
+    lat, lng, radiusKm, sort, page, limit,
+  } = query;
 
-  const { bloodGroup, divisionId, districtId, upazilaId, unionId, villageId, lat, lng, page, limit } = query;
-
-  const match = {
-    isAvailable: true,
-    userId: { $ne: oid(viewerId) },
-    $or: [{ lastDonationDate: null }, { lastDonationDate: { $lte: cutoff } }],
-    $nor: [
+  const match = { userId: { $ne: oid(viewerId) } };
+  if (availableOnly) match.isAvailable = true;
+  if (eligibleOnly) {
+    match.$or = [{ lastDonationDate: null }, { lastDonationDate: { $lte: cutoff } }];
+    match.$nor = [
       { 'healthDeclaration.surgery': true },
       { 'healthDeclaration.tattooOrPiercing': true },
       { 'healthDeclaration.onMedication': true },
       { 'healthDeclaration.pregnantOrBreastfeeding': true },
       { 'healthDeclaration.chronicDisease': true },
       { 'healthDeclaration.recentIllness.0': { $exists: true } },
-    ],
-  };
-  if (bloodGroup) match.bloodGroup = bloodGroup;
+    ];
+  }
+  if (bloodGroup) {
+    match.bloodGroup = compatible
+      ? { $in: COMPATIBLE_DONORS[bloodGroup] || [bloodGroup] }
+      : bloodGroup;
+  }
   if (divisionId) match.divisionId = oid(divisionId);
   if (districtId) match.districtId = oid(districtId);
   if (upazilaId) match.upazilaId = oid(upazilaId);
@@ -53,22 +61,22 @@ export const searchDonors = async (query, viewerId) => {
   if (villageId) match.villageId = oid(villageId);
 
   const hasGeo = lat !== undefined && lng !== undefined;
-  const pipeline = [];
+  const basePipeline = [];
   if (hasGeo) {
-    pipeline.push({
+    basePipeline.push({
       $geoNear: {
         near: { type: 'Point', coordinates: [lng, lat] },
         distanceField: 'distanceMeters',
         spherical: true,
-        maxDistance: 200 * 1000,
+        maxDistance: (radiusKm ?? 200) * 1000,
         query: match,
       },
     });
   } else {
-    pipeline.push({ $match: match });
+    basePipeline.push({ $match: match });
   }
-  pipeline.push(
-    { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+  basePipeline.push(
+    { $lookup: { from: User.collection.name, localField: 'userId', foreignField: '_id', as: 'user' } },
     { $unwind: '$user' },
     {
       $match: {
@@ -77,30 +85,52 @@ export const searchDonors = async (query, viewerId) => {
         'user.modes.donor': true,
       },
     },
-    { $lookup: { from: 'districts', localField: 'districtId', foreignField: '_id', as: 'district' } },
-    { $lookup: { from: 'upazilas', localField: 'upazilaId', foreignField: '_id', as: 'upazila' } }
   );
-  if (!hasGeo) pipeline.push({ $sort: { createdAt: -1 } });
-  pipeline.push({ $skip: (page - 1) * limit }, { $limit: limit });
 
-  const rows = await DonorProfile.aggregate(pipeline);
+  const sortStage = hasGeo && sort !== 'recently_active'
+    ? { $sort: { distanceMeters: 1 } }
+    : { $sort: { 'user.lastSeen': -1, updatedAt: -1 } };
+  const [rows, countResult] = await Promise.all([
+    DonorProfile.aggregate([
+      ...basePipeline,
+      { $lookup: { from: 'divisions', localField: 'divisionId', foreignField: '_id', as: 'division' } },
+      { $lookup: { from: 'districts', localField: 'districtId', foreignField: '_id', as: 'district' } },
+      { $lookup: { from: 'upazilas', localField: 'upazilaId', foreignField: '_id', as: 'upazila' } },
+      { $lookup: { from: 'unions', localField: 'unionId', foreignField: '_id', as: 'union' } },
+      sortStage,
+      { $skip: (page - 1) * limit },
+      { $limit: limit },
+    ]),
+    DonorProfile.aggregate([...basePipeline, { $count: 'total' }]),
+  ]);
 
-  const items = rows.map((d) => ({
-    id: d.userId,
-    name: d.user.name,
-    avatar: d.user.avatar,
-    phone: d.user.phone,
-    bloodGroup: d.bloodGroup,
-    gender: d.gender,
-    donationCount: d.donationCount,
-    idVerified: d.idVerified,
-    distanceKm: d.distanceMeters != null ? Math.round((d.distanceMeters / 1000) * 10) / 10 : null,
-    area: {
-      district: d.district?.[0] ? { bn: d.district[0].nameBn, en: d.district[0].nameEn } : null,
-      upazila: d.upazila?.[0] ? { bn: d.upazila[0].nameBn, en: d.upazila[0].nameEn } : null,
-    },
-  }));
-  return { items, page, limit };
+  const items = rows.map((d) => {
+    const item = {
+      id: d.userId,
+      name: d.user.name,
+      avatar: d.user.avatar,
+      phone: d.user.phone,
+      bloodGroup: d.bloodGroup,
+      gender: d.gender,
+      donationCount: d.donationCount,
+      idVerified: d.idVerified,
+      isAvailable: d.isAvailable,
+      isEligible:
+        (!d.lastDonationDate || new Date(d.lastDonationDate).getTime() <= cutoff.getTime()) &&
+        isHealthEligible(d.healthDeclaration),
+      distanceKm: d.distanceMeters != null ? Math.round((d.distanceMeters / 1000) * 10) / 10 : null,
+      area: {
+        division: d.division?.[0] ? { bn: d.division[0].nameBn, en: d.division[0].nameEn } : null,
+        district: d.district?.[0] ? { bn: d.district[0].nameBn, en: d.district[0].nameEn } : null,
+        upazila: d.upazila?.[0] ? { bn: d.upazila[0].nameBn, en: d.upazila[0].nameEn } : null,
+        union: d.union?.[0] ? { bn: d.union[0].nameBn, en: d.union[0].nameEn } : null,
+      },
+    };
+    if (d.user.privacy?.showLastDonation === true) item.lastDonationDate = d.lastDonationDate || null;
+    return item;
+  });
+  const total = countResult[0]?.total || 0;
+  return { items, page, limit, total, hasMore: page * limit < total };
 };
 
 export const getDonor = async (donorUserId, viewerId, query) => {
@@ -109,13 +139,15 @@ export const getDonor = async (donorUserId, viewerId, query) => {
   const cutoff = Date.now() - gapDays * DAY;
 
   const d = await DonorProfile.findOne({ userId: donorUserId })
+    .populate('divisionId', 'nameBn nameEn')
     .populate('districtId', 'nameBn nameEn')
     .populate('upazilaId', 'nameBn nameEn')
+    .populate('unionId', 'nameBn nameEn')
     .lean();
   if (!d) throw ApiError.notFound('Donor not found', 'DONOR_NOT_FOUND');
 
   const user = await User.findById(donorUserId)
-    .select('name avatar phone status emailVerifiedAt modes')
+    .select('name avatar phone privacy status emailVerifiedAt modes')
     .lean();
   if (!user || user.status !== 'active' || !user.emailVerifiedAt || !user.modes?.donor) {
     throw ApiError.notFound('Donor not found', 'DONOR_NOT_FOUND');
@@ -144,10 +176,13 @@ export const getDonor = async (donorUserId, viewerId, query) => {
       isEligible,
       distanceKm,
       area: {
+        division: d.divisionId ? { bn: d.divisionId.nameBn, en: d.divisionId.nameEn } : null,
         district: d.districtId ? { bn: d.districtId.nameBn, en: d.districtId.nameEn } : null,
         upazila: d.upazilaId ? { bn: d.upazilaId.nameBn, en: d.upazilaId.nameEn } : null,
+        union: d.unionId ? { bn: d.unionId.nameBn, en: d.unionId.nameEn } : null,
       },
       phone: user.phone,
+      ...(user.privacy?.showLastDonation === true ? { lastDonationDate: d.lastDonationDate || null } : {}),
     },
   };
 };

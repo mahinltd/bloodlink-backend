@@ -18,6 +18,10 @@ export const listMine = asyncHandler(async (req, res) =>
 	ok(res, await service.listMine(req.auth.userId, req.query))
 );
 
+export const listResponded = asyncHandler(async (req, res) =>
+	ok(res, await service.listRespondedRequests(req.auth.userId, req.query))
+);
+
 export const get = asyncHandler(async (req, res) =>
 	ok(res, await service.getRequest(req.params.id, req.auth.userId))
 );
