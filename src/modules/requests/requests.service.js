@@ -23,6 +23,26 @@ const containsBannedWord = (...texts) => {
   return BANNED_WORDS.find((word) => text.includes(word.toLowerCase())) || null;
 };
 
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const activeRequesterStages = () => [
+  {
+    $lookup: {
+      from: User.collection.name,
+      localField: 'requesterId',
+      foreignField: '_id',
+      as: '_requester',
+    },
+  },
+  { $match: { '_requester.status': 'active', '_requester.emailVerifiedAt': { $ne: null } } },
+];
+
+const formatRequestItems = (items) =>
+  items.map(({ distanceMeters, urgencyRank, ...request }) => ({
+    ...request,
+    distanceKm: distanceMeters != null ? Math.round((distanceMeters / 1000) * 10) / 10 : null,
+  }));
+
 const notify = (userId, type, title, body, data = {}) =>
   notifyOne({ userId, type, title, body, data }).catch((error) =>
     logger.error('notify failed:', error.message)
@@ -63,6 +83,7 @@ export const createRequest = async (userId, payload) => {
   const request = await BloodRequest.create({
     requesterId: userId,
     patientName: payload.patientName,
+    patientCondition: payload.patientCondition || null,
     bloodGroup: payload.bloodGroup,
     component: payload.component,
     bagsNeeded: payload.bagsNeeded,
@@ -70,6 +91,8 @@ export const createRequest = async (userId, payload) => {
     urgency,
     hospitalId: payload.hospitalId || null,
     hospitalName: payload.hospitalName,
+    hospitalAddress: payload.hospitalAddress || null,
+    wardOrUnit: payload.wardOrUnit || null,
     location: { type: 'Point', coordinates: [payload.coordinates.lng, payload.coordinates.lat] },
     divisionId: payload.divisionId || null,
     districtId: payload.districtId || null,
@@ -77,6 +100,7 @@ export const createRequest = async (userId, payload) => {
     attendantName: payload.attendantName,
     attendantRelation: payload.attendantRelation || null,
     attendantPhone: payload.attendantPhone,
+    contactPreference: payload.contactPreference || 'any',
     note: payload.note,
     consentAccepted: true,
     expiresAt: neededBy,
@@ -90,9 +114,93 @@ export const createRequest = async (userId, payload) => {
 };
 
 export const listRequests = async (query) => {
-  const { urgency, bloodGroup, lat, lng, page, limit } = query;
-  const match = { status: 'open', isHidden: false, expiresAt: { $gt: new Date() } };
+  const { urgency, bloodGroup, component, divisionId, districtId, upazilaId, q, lat, lng, page, limit } = query;
+  const now = new Date();
+  const match = { status: 'open', isHidden: false, expiresAt: { $gt: now } };
   if (urgency) match.urgency = urgency;
+  if (bloodGroup) match.bloodGroup = bloodGroup;
+  if (component) match.component = component;
+  if (divisionId) match.divisionId = new mongoose.Types.ObjectId(divisionId);
+  if (districtId) match.districtId = new mongoose.Types.ObjectId(districtId);
+  if (upazilaId) match.upazilaId = new mongoose.Types.ObjectId(upazilaId);
+  if (q) {
+    const search = new RegExp(escapeRegex(q), 'i');
+    match.$or = [{ hospitalName: search }, { patientName: search }];
+  }
+
+  const hasCoordinates = lat !== undefined && lng !== undefined;
+  const basePipeline = [];
+  if (hasCoordinates) {
+    basePipeline.push({
+      $geoNear: {
+        near: { type: 'Point', coordinates: [lng, lat] },
+        distanceField: 'distanceMeters',
+        spherical: true,
+        maxDistance: (query.radiusKm ?? 50) * 1000,
+        query: match,
+      },
+    });
+  } else {
+    basePipeline.push({ $match: match });
+  }
+  basePipeline.push(...activeRequesterStages());
+
+  const urgencyRankStage = {
+    $addFields: {
+      urgencyRank: {
+        $switch: {
+          branches: [
+            { case: { $eq: ['$urgency', 'sos'] }, then: 0 },
+            { case: { $eq: ['$urgency', 'urgent'] }, then: 1 },
+          ],
+          default: 2,
+        },
+      },
+    },
+  };
+  let sort;
+  if (query.sort === 'nearest') {
+    sort = { distanceMeters: 1 };
+  } else if (query.sort === 'newest') {
+    sort = { createdAt: -1 };
+  } else {
+    sort = hasCoordinates
+      ? { urgencyRank: 1, distanceMeters: 1, createdAt: -1 }
+      : { urgencyRank: 1, createdAt: -1 };
+  }
+
+  const [items, countResult] = await Promise.all([
+    BloodRequest.aggregate([
+      ...basePipeline,
+      { $project: { _requester: 0 } },
+      urgencyRankStage,
+      { $sort: sort },
+      { $skip: (page - 1) * limit },
+      { $limit: limit },
+    ]),
+    BloodRequest.aggregate([...basePipeline, { $count: 'total' }]),
+  ]);
+  await BloodRequest.populate(items, { path: 'requesterId', select: 'name avatar' });
+
+  const total = countResult[0]?.total || 0;
+  return {
+    items: formatRequestItems(items),
+    page,
+    limit,
+    total,
+    hasMore: page * limit < total,
+  };
+};
+
+export const listSosRequests = async ({ lat, lng, limit, bloodGroup }) => {
+  const now = new Date();
+  const match = {
+    status: 'open',
+    urgency: 'sos',
+    isHidden: false,
+    expiresAt: { $gt: now },
+    neededBy: { $gt: now },
+  };
   if (bloodGroup) match.bloodGroup = bloodGroup;
 
   const hasCoordinates = lat !== undefined && lng !== undefined;
@@ -103,7 +211,6 @@ export const listRequests = async (query) => {
         near: { type: 'Point', coordinates: [lng, lat] },
         distanceField: 'distanceMeters',
         spherical: true,
-        maxDistance: 200 * 1000,
         query: match,
       },
     });
@@ -111,42 +218,15 @@ export const listRequests = async (query) => {
     pipeline.push({ $match: match });
   }
   pipeline.push(
-    {
-      $lookup: {
-        from: 'users',
-        localField: 'requesterId',
-        foreignField: '_id',
-        as: '_requester',
-      },
-    },
-    { $match: { '_requester.status': 'active', '_requester.emailVerifiedAt': { $ne: null } } },
+    ...activeRequesterStages(),
     { $project: { _requester: 0 } },
-    {
-      $addFields: {
-        urgencyRank: {
-          $switch: {
-            branches: [
-              { case: { $eq: ['$urgency', 'sos'] }, then: 0 },
-              { case: { $eq: ['$urgency', 'urgent'] }, then: 1 },
-            ],
-            default: 2,
-          },
-        },
-      },
-    },
-    { $sort: hasCoordinates ? { urgencyRank: 1, distanceMeters: 1 } : { urgencyRank: 1, createdAt: -1 } },
-    { $skip: (page - 1) * limit },
+    { $sort: hasCoordinates ? { distanceMeters: 1, createdAt: -1 } : { createdAt: -1 } },
     { $limit: limit }
   );
-
   const items = await BloodRequest.aggregate(pipeline);
   await BloodRequest.populate(items, { path: 'requesterId', select: 'name avatar' });
-
-  const data = items.map(({ distanceMeters, ...request }) => ({
-    ...request,
-    distanceKm: distanceMeters != null ? Math.round((distanceMeters / 1000) * 10) / 10 : null,
-  }));
-  return { items: data, page, limit };
+  const formatted = formatRequestItems(items);
+  return { items: formatted, banner: formatted[0] || null };
 };
 
 export const listMine = async (userId, { page, limit }) => {
@@ -162,7 +242,7 @@ export const getRequest = async (id, userId) => {
   const request = await BloodRequest.findById(id)
     .populate({
       path: 'requesterId',
-      select: 'name avatar status emailVerifiedAt',
+      select: 'name avatar',
       match: { status: 'active', emailVerifiedAt: { $ne: null } },
     })
     .lean();
@@ -202,6 +282,7 @@ export const updateRequest = async (requestId, ownerId, payload) => {
 
   const allowed = [
     'patientName', 'bloodGroup', 'component', 'bagsNeeded', 'hospitalName',
+    'hospitalAddress', 'wardOrUnit', 'patientCondition', 'contactPreference',
     'attendantName', 'attendantRelation', 'attendantPhone',
   ];
   for (const key of allowed) if (payload[key] !== undefined) request[key] = payload[key];

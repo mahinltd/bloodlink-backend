@@ -16,6 +16,8 @@ const bloodRequestSchema = new Schema(
     urgency: { type: String, enum: REQUEST_URGENCY, default: 'normal' },
     hospitalId: { type: Schema.Types.ObjectId, ref: 'Hospital', default: null },
     hospitalName: { type: String, required: true, trim: true, maxlength: 160 },
+    hospitalAddress: { type: String, default: null, trim: true, maxlength: 300 },
+    wardOrUnit: { type: String, default: null, trim: true, maxlength: 100 },
     location: {
       type: { type: String, enum: ['Point'], default: 'Point' },
       coordinates: { type: [Number], required: true }, // [lng, lat]
@@ -26,6 +28,8 @@ const bloodRequestSchema = new Schema(
     attendantName: { type: String, required: true, trim: true, maxlength: 80 },
     attendantRelation: { type: String, default: null, trim: true, maxlength: 40 },
     attendantPhone: { type: String, required: true, match: /^01[3-9]\d{8}$/ },
+    contactPreference: { type: String, enum: ['chat', 'call', 'sms', 'any'], default: 'any' },
+    patientCondition: { type: String, default: null, trim: true, maxlength: 160 },
     note: {
       bn: { type: String, default: '', maxlength: 500 },
       en: { type: String, default: '', maxlength: 500 },

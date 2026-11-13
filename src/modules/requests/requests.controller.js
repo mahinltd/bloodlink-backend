@@ -10,6 +10,10 @@ export const list = asyncHandler(async (req, res) =>
 	ok(res, await service.listRequests(req.query))
 );
 
+export const sos = asyncHandler(async (req, res) =>
+	ok(res, await service.listSosRequests(req.query))
+);
+
 export const listMine = asyncHandler(async (req, res) =>
 	ok(res, await service.listMine(req.auth.userId, req.query))
 );

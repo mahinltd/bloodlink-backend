@@ -26,6 +26,8 @@ export const createRequestSchema = z.object({
     urgency: z.enum(['normal', 'urgent', 'sos']).optional(),
     hospitalId: objectId.nullish(),
     hospitalName: z.string().trim().min(2).max(160),
+    hospitalAddress: z.string().trim().max(300).nullish(),
+    wardOrUnit: z.string().trim().max(100).nullish(),
     coordinates: z.object({
       lat: z.coerce.number().min(-90).max(90),
       lng: z.coerce.number().min(-180).max(180),
@@ -37,6 +39,7 @@ export const createRequestSchema = z.object({
     attendantName: z.string().trim().min(2).max(80),
     attendantRelation: z.string().trim().max(40).nullish(),
     attendantPhone: z.string().regex(phoneRegex, 'Invalid Bangladeshi phone number'),
+    contactPreference: z.enum(['chat', 'call', 'sms', 'any']).default('any'),
     note: z
       .object({
         bn: z.string().trim().max(500).default(''),
@@ -53,15 +56,45 @@ export const updateRequestSchema = z.object({
 });
 
 export const listRequestsSchema = z.object({
-  query: z.object({
-    urgency: z.enum(['normal', 'urgent', 'sos']).optional(),
-    bloodGroup: z.enum(BLOOD_GROUPS).optional(),
-    lat: z.coerce.number().min(-90).max(90).optional(),
-    lng: z.coerce.number().min(-180).max(180).optional(),
-    radiusKm: z.coerce.number().min(1).max(200).default(50),
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(50).default(20),
-  }),
+  query: z
+    .object({
+      urgency: z.enum(['normal', 'urgent', 'sos']).optional(),
+      bloodGroup: z.enum(BLOOD_GROUPS).optional(),
+      component: z.enum(BLOOD_COMPONENTS).optional(),
+      divisionId: objectId.optional(),
+      districtId: objectId.optional(),
+      upazilaId: objectId.optional(),
+      q: z.string().trim().max(160).optional(),
+      lat: z.coerce.number().min(-90).max(90).optional(),
+      lng: z.coerce.number().min(-180).max(180).optional(),
+      radiusKm: z.coerce.number().min(1).max(200).default(50),
+      sort: z.enum(['nearest', 'newest', 'urgency']).optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(50).default(20),
+    })
+    .superRefine((query, ctx) => {
+      if ((query.lat === undefined) !== (query.lng === undefined)) {
+        ctx.addIssue({ code: 'custom', path: ['lat'], message: 'lat and lng must be provided together' });
+      }
+      if (query.sort === 'nearest' && query.lat === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['sort'], message: 'Nearest sorting requires lat and lng' });
+      }
+    }),
+});
+
+export const sosRequestsSchema = z.object({
+  query: z
+    .object({
+      lat: z.coerce.number().min(-90).max(90).optional(),
+      lng: z.coerce.number().min(-180).max(180).optional(),
+      limit: z.coerce.number().int().min(1).max(50).default(10),
+      bloodGroup: z.enum(BLOOD_GROUPS).optional(),
+    })
+    .superRefine((query, ctx) => {
+      if ((query.lat === undefined) !== (query.lng === undefined)) {
+        ctx.addIssue({ code: 'custom', path: ['lat'], message: 'lat and lng must be provided together' });
+      }
+    }),
 });
 
 export const respondSchema = z.object({

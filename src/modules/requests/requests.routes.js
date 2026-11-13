@@ -8,6 +8,7 @@ import { requestFeedLimiter } from '../../middlewares/rateLimiter.middleware.js'
 const requestRoutes = Router();
 requestRoutes.use(protect);
 
+requestRoutes.get('/sos', requestFeedLimiter, validate(v.sosRequestsSchema), controller.sos);
 requestRoutes.get('/', requestFeedLimiter, validate(v.listRequestsSchema), controller.list);
 requestRoutes.post('/', validate(v.createRequestSchema), controller.create);
 requestRoutes.get('/mine', validate(v.paginationSchema), controller.listMine);

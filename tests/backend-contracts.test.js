@@ -15,7 +15,12 @@ import { AppConfig } from '../src/modules/config/appConfig.model.js';
 import { DonorProfile } from '../src/modules/users/donorProfile.model.js';
 import { getMe, acceptTerms } from '../src/modules/users/users.service.js';
 import { getDonor, revealPhone, searchDonors } from '../src/modules/donors/donors.service.js';
-import { getRequest } from '../src/modules/requests/requests.service.js';
+import {
+  createRequest,
+  getRequest,
+  listRequests,
+  listSosRequests,
+} from '../src/modules/requests/requests.service.js';
 import { BloodRequest } from '../src/modules/requests/bloodRequest.model.js';
 import { RequestResponse } from '../src/modules/requests/requestResponse.model.js';
 import { expectedUrgency, normalMaxDays, resolveUrgency } from '../src/modules/requests/urgencyRules.js';
@@ -31,6 +36,7 @@ import { generateOtp } from '../src/utils/otp.util.js';
 import { unionsQuerySchema, villagesQuerySchema } from '../src/modules/locations/locations.validation.js';
 import { donorProfileSchema } from '../src/modules/users/users.validation.js';
 import { registerSchema } from '../src/modules/auth/auth.validation.js';
+import { listRequestsSchema } from '../src/modules/requests/requests.validation.js';
 
 test('validated query defaults and transforms survive Express 5 query parsing', async () => {
   const app = express();
@@ -198,6 +204,187 @@ test('urgency defaults follow the configured windows and reject mismatched selec
     () => resolveUrgency('urgent', hours(3), rules, now),
     (error) => error.code === 'URGENCY_WINDOW_MISMATCH'
   );
+});
+
+test('create request persists the additional contact and hospital fields', async () => {
+  const originals = {
+    configFindOne: AppConfig.findOne,
+    userFindById: User.findById,
+    requestCount: BloodRequest.countDocuments,
+    requestCreate: BloodRequest.create,
+    requestFindById: BloodRequest.findById,
+  };
+  let createdRequest;
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({ businessRules: {} }),
+  });
+  User.findById = async () => ({
+    status: 'active',
+    createdAt: new Date(Date.now() - 10 * 86400000),
+  });
+  BloodRequest.countDocuments = async () => 0;
+  BloodRequest.create = async (data) => {
+    createdRequest = data;
+    return { _id: 'request-id' };
+  };
+  BloodRequest.findById = async () => null;
+  invalidateConfigCache();
+
+  try {
+    const neededBy = new Date(Date.now() + 4 * 86400000);
+    await createRequest('requester-id', {
+      patientName: 'Patient',
+      patientCondition: 'Post-surgery',
+      bloodGroup: 'A+',
+      component: 'whole_blood',
+      bagsNeeded: 2,
+      neededBy,
+      hospitalName: 'City Hospital',
+      hospitalAddress: 'Dhaka',
+      wardOrUnit: 'Ward 5',
+      coordinates: { lat: 23.7, lng: 90.4 },
+      attendantName: 'Attendant',
+      attendantPhone: '01712345678',
+      contactPreference: 'call',
+      note: { bn: '', en: '' },
+    });
+    assert.equal(createdRequest.urgency, 'normal');
+    assert.equal(createdRequest.patientCondition, 'Post-surgery');
+    assert.equal(createdRequest.hospitalAddress, 'Dhaka');
+    assert.equal(createdRequest.wardOrUnit, 'Ward 5');
+    assert.equal(createdRequest.contactPreference, 'call');
+  } finally {
+    AppConfig.findOne = originals.configFindOne;
+    User.findById = originals.userFindById;
+    BloodRequest.countDocuments = originals.requestCount;
+    BloodRequest.create = originals.requestCreate;
+    BloodRequest.findById = originals.requestFindById;
+    invalidateConfigCache();
+  }
+});
+
+test('request feed applies escaped search, filters, radius and returns pagination totals', async () => {
+  const originalAggregate = BloodRequest.aggregate;
+  const originalPopulate = BloodRequest.populate;
+  const pipelines = [];
+  BloodRequest.aggregate = async (pipeline) => {
+    pipelines.push(pipeline);
+    return pipelines.length === 1
+      ? [{ attendantPhone: '01712345678', distanceMeters: 1250, urgencyRank: 0 }]
+      : [{ total: 22 }];
+  };
+  BloodRequest.populate = async (items) => items;
+
+  try {
+    const data = await listRequests({
+      urgency: 'sos',
+      bloodGroup: 'A+',
+      component: 'platelets',
+      divisionId: '6af4b2c56bce675945a7eb7d',
+      districtId: '6af4b2c56bce675945a7eb7e',
+      upazilaId: '6af4b2c56bce675945a7eb7f',
+      q: '[',
+      lat: 23.7,
+      lng: 90.4,
+      radiusKm: 12,
+      sort: 'urgency',
+      page: 2,
+      limit: 10,
+    });
+    const near = pipelines[0][0].$geoNear;
+    assert.equal(near.maxDistance, 12000);
+    assert.equal(near.query.component, 'platelets');
+    assert.equal(near.query.urgency, 'sos');
+    assert.equal(near.query.divisionId.toString(), '6af4b2c56bce675945a7eb7d');
+    assert.equal(near.query.$or[0].hospitalName.test('Hospital ['), true);
+    assert.equal(pipelines[1][pipelines[1].length - 1].$count, 'total');
+    assert.equal(data.total, 22);
+    assert.equal(data.hasMore, true);
+    assert.equal(data.items[0].distanceKm, 1.3);
+    assert.equal(data.items[0].attendantPhone, '01712345678');
+  } finally {
+    BloodRequest.aggregate = originalAggregate;
+    BloodRequest.populate = originalPopulate;
+  }
+});
+
+test('SOS endpoint returns active requests and banner with nearest-first distance', async () => {
+  const originalAggregate = BloodRequest.aggregate;
+  const originalPopulate = BloodRequest.populate;
+  let pipeline;
+  let calls = 0;
+  BloodRequest.aggregate = async (value) => {
+    pipeline = value;
+    calls += 1;
+    return calls === 1
+      ? [{ _id: 'sos-id', urgency: 'sos', attendantPhone: '01712345678', distanceMeters: 2200 }]
+      : [];
+  };
+  BloodRequest.populate = async (items) => items;
+
+  try {
+    const data = await listSosRequests({ lat: 23.7, lng: 90.4, limit: 5, bloodGroup: 'A+' });
+    assert.equal(pipeline[0].$geoNear.query.urgency, 'sos');
+    assert.equal(pipeline[0].$geoNear.query.bloodGroup, 'A+');
+    assert.deepEqual(pipeline.find((stage) => stage.$sort).$sort, { distanceMeters: 1, createdAt: -1 });
+    assert.equal(data.items[0].distanceKm, 2.2);
+    assert.equal(data.items[0].attendantPhone, '01712345678');
+    assert.equal(data.banner._id, 'sos-id');
+    const newest = await listSosRequests({ limit: 5 });
+    assert.deepEqual(pipeline.find((stage) => stage.$sort).$sort, { createdAt: -1 });
+    assert.equal(newest.banner, null);
+  } finally {
+    BloodRequest.aggregate = originalAggregate;
+    BloodRequest.populate = originalPopulate;
+  }
+});
+
+test('GET /v1/requests/sos is routed before request ids and returns the banner', async () => {
+  const originalUserFindById = User.findById;
+  const originalAggregate = BloodRequest.aggregate;
+  const originalPopulate = BloodRequest.populate;
+  User.findById = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({ status: 'active', emailVerifiedAt: new Date() }),
+  });
+  BloodRequest.aggregate = async () => [
+    { _id: 'sos-id', urgency: 'sos', attendantPhone: '01712345678', distanceMeters: 500 },
+  ];
+  BloodRequest.populate = async (items) => items;
+
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use('/v1/requests', requestRoutes);
+  app.use(errorMiddleware);
+  const server = app.listen(0);
+  await once(server, 'listening');
+  try {
+    const token = signAccessToken({ sub: '6af4b2c56bce675945a7eb7e', scope: 'user' });
+    const response = await fetch(
+      `http://127.0.0.1:${server.address().port}/v1/requests/sos?lat=23.7&lng=90.4`,
+      { headers: { authorization: `Bearer ${token}`, 'x-forwarded-for': '203.0.113.40' } }
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.data.banner.attendantPhone, '01712345678');
+    assert.equal(body.data.items[0].distanceKm, 0.5);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    User.findById = originalUserFindById;
+    BloodRequest.aggregate = originalAggregate;
+    BloodRequest.populate = originalPopulate;
+  }
+});
+
+test('feed and SOS query validation requires coordinate pairs and nearest coordinates', () => {
+  assert.equal(listRequestsSchema.safeParse({ query: { lat: 23.7 } }).success, false);
+  assert.equal(listRequestsSchema.safeParse({ query: { sort: 'nearest' } }).success, false);
+  assert.equal(listRequestsSchema.safeParse({ query: { component: 'platelets', sort: 'newest' } }).success, true);
 });
 
 test('legacy urgentThresholdHours no longer overrides SOS and urgent windows', async () => {
