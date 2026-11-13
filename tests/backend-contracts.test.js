@@ -947,6 +947,50 @@ test('protected request feed rejects anonymous and unverified users', async () =
   }
 });
 
+test('responded requests route accepts default and explicit pagination', async () => {
+  const originalFindById = User.findById;
+  const originalAggregate = RequestResponse.aggregate;
+  User.findById = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({ status: 'active', emailVerifiedAt: new Date() }),
+  });
+  RequestResponse.aggregate = async () => [{ items: [], total: [] }];
+
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use('/v1/requests', requestRoutes);
+  app.use(errorMiddleware);
+  const server = app.listen(0);
+  await once(server, 'listening');
+
+  try {
+    const token = signAccessToken({ sub: '6af4b2c56bce675945a7eb7e', scope: 'user' });
+    const baseUrl = `http://127.0.0.1:${server.address().port}/v1/requests/responded`;
+    for (const url of [baseUrl, `${baseUrl}?page=1&limit=20`]) {
+      const response = await fetch(url, {
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-forwarded-for': '192.0.2.10',
+        },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).data, {
+        items: [],
+        page: 1,
+        limit: 20,
+        total: 0,
+        hasMore: false,
+      });
+    }
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    User.findById = originalFindById;
+    RequestResponse.aggregate = originalAggregate;
+  }
+});
+
 test('donor directory rejects anonymous and unverified viewers before returning phone data', async () => {
   const originalFindById = User.findById;
   User.findById = () => ({
