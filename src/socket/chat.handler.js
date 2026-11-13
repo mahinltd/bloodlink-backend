@@ -7,7 +7,7 @@ import {
   socketTypingSchema,
   socketPresenceSchema,
 } from '../modules/chat/chat.validation.js';
-import { sendPushToUsers } from '../modules/notifications/fcm.service.js';
+import { notifyOne } from '../modules/notifications/notifications.service.js';
 import { User } from '../modules/users/user.model.js';
 
 // অনলাইন ব্যবহারকারী: userId -> Set<socketId> (একাধিক ডিভাইস সাপোর্ট)
@@ -74,13 +74,14 @@ export const registerChatHandlers = (io, socket) => {
       if (!isUserOnline(recipientId)) {
         const sender = await User.findById(userId).select('name').lean();
         const preview = message.text ? message.text.slice(0, 80) : '📷 ছবি';
-        sendPushToUsers([recipientId], {
-          channel: 'messages',
+        notifyOne({
+          userId: recipientId,
           type: 'message',
           title: { bn: sender?.name || '', en: sender?.name || '' },
           body: { bn: preview, en: preview },
           data: { conversationId: String(parsed.data.conversationId), senderId: String(userId) },
-        }).catch((err) => logger.error('message push failed:', err.message));
+          respectPreference: true,
+        }).catch((err) => logger.error('message notification failed:', err.message));
       }
     } catch (err) {
       fail(ack, err);

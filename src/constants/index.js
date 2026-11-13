@@ -62,6 +62,9 @@ export const DEFAULT_BUSINESS_RULES = {
     normalExpiryDays: 7,
     rareGroups: ['O-', 'AB-'],
     perDonorPerDay: 5,
+    maxRecipientsPerRequest: 50,
+    sosMinRecipients: 5,
+    sosMaxRadiusKm: 200,
   },
   requests: {
     dailyLimit: 2,

@@ -42,7 +42,13 @@ export const sendPushToUsers = async (userIds, payload) => {
     const res = await messaging.sendEachForMulticast({
       tokens: chunk,
       data,
-      android: { priority: 'high', ttl: 3600 * 1000 },
+      android: {
+        priority: payload.priority || 'high',
+        ttl: 3600 * 1000,
+        ...(payload.sound || payload.data?.sound
+          ? { notification: { channelId: payload.channel, sound: payload.sound || payload.data.sound } }
+          : {}),
+      },
     });
     sent += res.successCount;
     res.responses.forEach((response, index) => {

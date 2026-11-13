@@ -1,13 +1,12 @@
-import mongoose from 'mongoose';
 import { DonorProfile } from '../users/donorProfile.model.js';
 import { RequestResponse } from '../requests/requestResponse.model.js';
 import { BloodRequest } from '../requests/bloodRequest.model.js';
 import { Notification } from '../notifications/notification.model.js';
-import { notifyUsers } from '../notifications/notifications.service.js';
+import { notifyRequestDonors } from '../notifications/notifications.service.js';
 import { getBusinessRules, getPublishedConfig } from '../config/config.service.js';
 import { User } from '../users/user.model.js';
 import { COMPATIBLE_DONORS } from '../../constants/bloodGroups.js';
-import { sendUrgentRequestEmail } from '../notifications/email.service.js';
+import { sendRequestNotificationEmail } from '../notifications/email.service.js';
 import { logger } from '../../utils/logger.js';
 
 const MAX_NOTIFY_PER_ROUND = 50;
@@ -32,11 +31,27 @@ export const findMatchingDonors = async (request, options = {}) => {
   const radii = matching.radiiKm || matching.radiusStepsKm || [10, 25, 50];
   const threshold = options.threshold ?? matching.threshold ?? matching.thresholdScore ?? 80;
   const maxRadiusKm = options.maxRadiusKm ?? Math.max(...radii);
+  const maxRecipients = options.maxRecipients ?? matching.maxRecipientsPerRequest ?? MAX_NOTIFY_PER_ROUND;
   const gapDays = rules.donor?.donationGapDays ?? 120;
   const dailyNotifyLimit = matching.dailyNotifyLimit ?? matching.perDonorPerDay ?? 5;
   const compatible = COMPATIBLE_DONORS[request.bloodGroup] || [request.bloodGroup];
   const eligibleBefore = new Date(Date.now() - gapDays * DAY);
   const [lng, lat] = request.location.coordinates;
+  const excludedIds = [
+    request.requesterId,
+    ...(request.notifiedDonorIds || []),
+    ...(options.excludeIds || []),
+  ].filter(Boolean);
+  const query = {
+    bloodGroup: { $in: compatible },
+    isAvailable: true,
+    userId: { $nin: [...new Map(excludedIds.map((id) => [id.toString(), id])).values()] },
+    $or: [{ lastDonationDate: null }, { lastDonationDate: { $lte: eligibleBefore } }],
+  };
+  if (options.locationScope) {
+    const [field, value] = Object.entries(options.locationScope)[0] || [];
+    if (field && value) query[field] = value;
+  }
 
   const donors = await DonorProfile.aggregate([
     {
@@ -45,16 +60,19 @@ export const findMatchingDonors = async (request, options = {}) => {
         distanceField: 'distanceMeters',
         spherical: true,
         maxDistance: maxRadiusKm * 1000,
-        query: {
-          bloodGroup: { $in: compatible },
-          isAvailable: true,
-          userId: { $ne: new mongoose.Types.ObjectId(request.requesterId) },
-          $or: [{ lastDonationDate: null }, { lastDonationDate: { $lte: eligibleBefore } }],
-        },
+        query,
       },
     },
-    { $match: { $expr: { $lte: ['$distanceMeters', { $multiply: ['$radiusKm', 1000] }] } } },
-    { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+    {
+      $match: {
+        $or: [
+          { $expr: { $lte: ['$distanceMeters', { $multiply: ['$radiusKm', 1000] }] } },
+          ...(request.upazilaId ? [{ upazilaId: request.upazilaId }] : []),
+          ...(request.districtId ? [{ districtId: request.districtId }] : []),
+        ],
+      },
+    },
+    { $lookup: { from: User.collection.name, localField: 'userId', foreignField: '_id', as: 'user' } },
     { $unwind: '$user' },
     {
       $match: {
@@ -68,7 +86,13 @@ export const findMatchingDonors = async (request, options = {}) => {
 
   if (!donors.length) return [];
 
-  const healthyDonors = donors.filter(isHealthy);
+  const requestPref = request.urgency === 'normal' ? 'normalRequests' : 'urgentRequests';
+  const healthyDonors = donors.filter(
+    (donor) =>
+      isHealthy(donor) &&
+      donor.user.notificationPrefs?.push !== false &&
+      donor.user.notificationPrefs?.[requestPref] !== false
+  );
   const donorIds = healthyDonors.map((donor) => donor.userId);
   const declined = await RequestResponse.find({
     requestId: request._id,
@@ -84,7 +108,16 @@ export const findMatchingDonors = async (request, options = {}) => {
     {
       $match: {
         userId: { $in: donorIds },
-        type: { $in: ['blood_request', 'urgent_request', 'normal_request'] },
+        type: {
+          $in: [
+            'blood_request',
+            'urgent_request',
+            'normal_request',
+            'request_sos',
+            'request_urgent',
+            'request_normal',
+          ],
+        },
         createdAt: { $gte: startOfDay },
       },
     },
@@ -121,7 +154,7 @@ export const findMatchingDonors = async (request, options = {}) => {
   }
 
   matches.sort((a, b) => b.score - a.score);
-  return matches.slice(0, MAX_NOTIFY_PER_ROUND);
+  return matches.slice(0, maxRecipients);
 };
 
 export const findMatchedDonors = async (request, radiusKm) => {
@@ -129,60 +162,129 @@ export const findMatchedDonors = async (request, radiusKm) => {
   return matches.map((match) => ({ donorId: match.userId, score: match.score, distKm: match.distanceKm }));
 };
 
+export const fanOutRequestNotifications = async (request, matched, options = {}) => {
+  const type = request.urgency === 'sos'
+    ? 'request_sos'
+    : request.urgency === 'urgent'
+      ? 'request_urgent'
+      : 'request_normal';
+  const title = {
+    bn: request.urgency === 'sos'
+      ? `SOS: ${request.bloodGroup} রক্ত প্রয়োজন`
+      : request.urgency === 'urgent'
+        ? `জরুরি: ${request.bloodGroup} রক্ত প্রয়োজন`
+        : `${request.bloodGroup} রক্ত প্রয়োজন`,
+    en: request.urgency === 'sos'
+      ? `SOS: ${request.bloodGroup} blood needed`
+      : request.urgency === 'urgent'
+        ? `Urgent: ${request.bloodGroup} blood needed`
+        : `${request.bloodGroup} blood needed`,
+  };
+  const body = {
+    bn: `${request.hospitalName} · ${request.bagsNeeded} ব্যাগ`,
+    en: `${request.hospitalName} · ${request.bagsNeeded} bag(s)`,
+  };
+  const data = {
+    requestId: String(request._id),
+    bloodGroup: request.bloodGroup,
+    hospitalName: request.hospitalName,
+    urgency: request.urgency,
+    ...(request.urgency === 'sos' ? { sound: 'default' } : {}),
+  };
+  const recipients = await (options.notificationSender || notifyRequestDonors)(
+    {
+      userIds: matched.map((match) => match.userId),
+      requestId: request._id,
+      type,
+      title,
+      body,
+      data,
+      priority: request.urgency === 'normal' ? 'normal' : 'high',
+    },
+    options.pushSender ? { pushSender: options.pushSender } : undefined
+  );
+
+  const config = await getPublishedConfig();
+  const urgentEmailEnabled =
+    config?.featureFlags?.urgentEmail ?? config?.featureFlags?.emailForUrgentRequests ?? true;
+  const shouldEmail = request.urgency === 'sos' || (request.urgency === 'urgent' && urgentEmailEnabled);
+  if (!shouldEmail) return recipients;
+
+  const topN = request.urgency === 'urgent'
+    ? config?.businessRules?.matching?.urgentEmailTopN ?? config?.businessRules?.urgentEmailTopN ?? 10
+    : recipients.users.length;
+  const users = recipients.users
+    .filter((user) => user.email && user.notificationPrefs?.email !== false)
+    .slice(0, Math.max(0, topN));
+  const results = await Promise.allSettled(
+    users.map((user) =>
+      (options.emailSender || sendRequestNotificationEmail)(user.email, {
+        bloodGroup: request.bloodGroup,
+        hospitalName: request.hospitalName,
+        bagsNeeded: request.bagsNeeded,
+        neededBy: request.neededBy,
+        urgency: request.urgency,
+        language: user.language === 'en' ? 'en' : 'bn',
+      })
+    )
+  );
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      logger.error(`request email failed for ${request._id} to recipient ${index}:`, result.reason?.message);
+    }
+  });
+  return recipients;
+};
+
 export const matchAndNotify = async (requestId) => {
   try {
     const request = await BloodRequest.findById(requestId);
     if (!request || request.status !== 'open' || request.isHidden) return { notified: 0 };
 
-    const matched = await findMatchingDonors(request, { maxRadiusKm: request.matchRadiusKm || undefined });
+    const rules = await getBusinessRules();
+    const matching = rules.matching || {};
+    const maxRecipients = matching.maxRecipientsPerRequest ?? MAX_NOTIFY_PER_ROUND;
+    let matched;
+    if (request.urgency === 'sos') {
+      const maxRadiusKm = matching.sosMaxRadiusKm ?? 200;
+      const area = request.upazilaId
+        ? { upazilaId: request.upazilaId }
+        : request.districtId
+          ? { districtId: request.districtId }
+          : null;
+      matched = await findMatchingDonors(request, {
+        maxRadiusKm,
+        maxRecipients,
+        threshold: 0,
+        ...(area ? { locationScope: area } : {}),
+      });
+      if (
+        request.upazilaId &&
+        request.districtId &&
+        matched.length < (matching.sosMinRecipients ?? 5)
+      ) {
+        const districtMatches = await findMatchingDonors(request, {
+          maxRadiusKm,
+          maxRecipients: maxRecipients - matched.length,
+          threshold: 0,
+          locationScope: { districtId: request.districtId },
+          excludeIds: matched.map((match) => match.userId),
+        });
+        matched = [...matched, ...districtMatches];
+      }
+    } else {
+      matched = await findMatchingDonors(request, {
+        maxRadiusKm: request.matchRadiusKm || undefined,
+        maxRecipients,
+      });
+    }
 
     if (matched.length) {
-      const donorIds = matched.map((match) => match.userId);
-      const urgent = request.urgency === 'urgent';
-      await notifyUsers(donorIds, {
-        type: urgent ? 'urgent_request' : 'normal_request',
-        title: urgent ? `জরুরি: ${request.bloodGroup} রক্ত প্রয়োজন` : `${request.bloodGroup} রক্ত প্রয়োজন`,
-        body: `${request.hospitalName} · ${request.bagsNeeded} ব্যাগ`,
-        data: {
-          requestId: request._id.toString(),
-          bloodGroup: request.bloodGroup,
-          urgency: request.urgency,
-          component: request.component,
-        },
-        channelId: urgent ? 'urgent_requests' : 'requests',
-      });
-
-      const config = await getPublishedConfig();
-      const topN = config?.businessRules?.matching?.urgentEmailTopN ??
-        config?.businessRules?.urgentEmailTopN ?? 10;
-      const emailEnabled =
-        config?.featureFlags?.urgentEmail ?? config?.featureFlags?.emailForUrgentRequests ?? true;
-      if (urgent && emailEnabled && topN > 0) {
-        const topMatches = matched.slice(0, topN);
-        const users = await User.find({
-          _id: { $in: topMatches.map((match) => match.userId) },
-          status: 'active',
-        }).select('email notificationPrefs').lean();
-        await Promise.allSettled(
-          users
-            .filter((user) => user.notificationPrefs?.email !== false && user.notificationPrefs?.urgentRequests !== false)
-            .map((user) => {
-              const match = topMatches.find((item) => item.userId.toString() === user._id.toString());
-              return sendUrgentRequestEmail(user.email, {
-                bloodGroup: request.bloodGroup,
-                hospitalName: request.hospitalName,
-                bagsNeeded: request.bagsNeeded,
-                neededBy: request.neededBy,
-                distanceKm: match?.distanceKm ?? '?',
-              });
-            })
-        );
-      }
-
+      const result = await fanOutRequestNotifications(request, matched);
       const notified = new Set((request.notifiedDonorIds || []).map((id) => id.toString()));
-      for (const donorId of donorIds) notified.add(donorId.toString());
+      for (const donorId of result.recipientIds || []) notified.add(donorId.toString());
       request.notifiedDonorIds = [...notified];
-      logger.info(`Matched ${donorIds.length} donor(s) for request ${requestId}`);
+      logger.info(`Matched ${result.notified} donor(s) for request ${requestId}`);
     }
 
     request.lastNotifiedAt = new Date();

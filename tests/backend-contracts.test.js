@@ -12,6 +12,9 @@ import { OtpCode } from '../src/modules/auth/otpCode.model.js';
 import { register } from '../src/modules/auth/auth.service.js';
 import { getBusinessRules, invalidateConfigCache } from '../src/modules/config/config.service.js';
 import { AppConfig } from '../src/modules/config/appConfig.model.js';
+import { Notification } from '../src/modules/notifications/notification.model.js';
+import { notifyRequestDonors } from '../src/modules/notifications/notifications.service.js';
+import { fanOutRequestNotifications } from '../src/modules/matching/matching.service.js';
 import { DonorProfile } from '../src/modules/users/donorProfile.model.js';
 import { getMe, acceptTerms } from '../src/modules/users/users.service.js';
 import { getDonor, revealPhone, searchDonors } from '../src/modules/donors/donors.service.js';
@@ -692,6 +695,128 @@ test('responded requests are paginated and retain the donor response status', as
   } finally {
     RequestResponse.aggregate = originalAggregate;
     BloodRequest.populate = originalPopulate;
+  }
+});
+
+test('request notification inbox and push delivery respect preferences and deduplicate retries', async () => {
+  const originalFind = User.find;
+  const originalUpdateOne = Notification.updateOne;
+  const userIds = [
+    '6af4b2c56bce675945a7eb70',
+    '6af4b2c56bce675945a7eb71',
+    '6af4b2c56bce675945a7eb72',
+  ];
+  const users = [
+    { _id: userIds[0], notificationPrefs: { push: true, urgentRequests: true } },
+    { _id: userIds[1], notificationPrefs: { push: false, urgentRequests: true } },
+    { _id: userIds[2], notificationPrefs: { push: true, urgentRequests: false } },
+  ];
+  const inserted = new Set();
+  const pushed = [];
+  User.find = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => users,
+  });
+  Notification.updateOne = async ({ userId, requestId, type }) => {
+    const key = `${userId}:${requestId}:${type}`;
+    if (inserted.has(key)) return { upsertedCount: 0 };
+    inserted.add(key);
+    return { upsertedCount: 1 };
+  };
+
+  try {
+    const payload = {
+      userIds: [...userIds, userIds[0]],
+      requestId: '6af4b2c56bce675945a7eb73',
+      type: 'request_sos',
+      title: { bn: 'SOS', en: 'SOS' },
+      body: { bn: 'অনুরোধ', en: 'Request' },
+      data: { requestId: '6af4b2c56bce675945a7eb73', urgency: 'sos' },
+    };
+    const pushSender = async (ids, notification) => pushed.push({ ids, notification });
+    const first = await notifyRequestDonors(payload, { pushSender });
+    const retry = await notifyRequestDonors(payload, { pushSender });
+
+    assert.equal(first.notified, 1);
+    assert.equal(first.users[0]._id, userIds[0]);
+    assert.deepEqual(first.recipientIds, [userIds[0]]);
+    assert.equal(retry.notified, 0);
+    assert.equal(pushed.length, 1);
+    assert.deepEqual(pushed[0].ids, [userIds[0]]);
+    assert.equal(pushed[0].notification.priority, 'high');
+    assert.equal(inserted.size, 1);
+  } finally {
+    User.find = originalFind;
+    Notification.updateOne = originalUpdateOne;
+  }
+});
+
+test('request fan-out sends localized SOS and urgent email by preference and uses normal priority', async () => {
+  const originalFindOne = AppConfig.findOne;
+  const originalUsers = [
+    { _id: 'recipient-one', email: 'one@example.test', language: 'en', notificationPrefs: { email: false } },
+    { _id: 'recipient-two', email: 'two@example.test', language: 'bn', notificationPrefs: { email: true } },
+    { _id: 'recipient-three', email: 'three@example.test', language: 'en', notificationPrefs: { email: true } },
+  ];
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({
+      featureFlags: { urgentEmail: true },
+      businessRules: { matching: { urgentEmailTopN: 1 } },
+    }),
+  });
+  invalidateConfigCache();
+
+  try {
+    const calls = [];
+    const notificationSender = async (payload) => {
+      calls.push(payload);
+      return { notified: 3, users: originalUsers, recipientIds: originalUsers.map((user) => user._id) };
+    };
+    const emails = [];
+    const emailSender = async (...args) => emails.push(args);
+    const request = {
+      _id: '6af4b2c56bce675945a7eb74',
+      urgency: 'urgent',
+      bloodGroup: 'A+',
+      hospitalName: 'Dhaka Hospital',
+      bagsNeeded: 2,
+      neededBy: new Date('2026-07-14T12:00:00Z'),
+    };
+    const matched = originalUsers.map((user) => ({ userId: user._id }));
+
+    await fanOutRequestNotifications(request, matched, { notificationSender, emailSender });
+    assert.equal(calls[0].type, 'request_urgent');
+    assert.deepEqual(calls[0].data, {
+      requestId: request._id,
+      bloodGroup: 'A+',
+      hospitalName: 'Dhaka Hospital',
+      urgency: 'urgent',
+    });
+    assert.equal(calls[0].priority, 'high');
+    assert.equal(emails.length, 1);
+    assert.equal(emails[0][0], 'two@example.test');
+    assert.equal(emails[0][1].language, 'bn');
+
+    request.urgency = 'normal';
+    await fanOutRequestNotifications(request, matched, { notificationSender, emailSender });
+    assert.equal(calls[1].type, 'request_normal');
+    assert.equal(calls[1].priority, 'normal');
+    assert.equal(emails.length, 1);
+
+    request.urgency = 'sos';
+    await fanOutRequestNotifications(request, matched, { notificationSender, emailSender });
+    assert.equal(calls[2].type, 'request_sos');
+    assert.equal(calls[2].priority, 'high');
+    assert.equal(calls[2].data.sound, 'default');
+    assert.equal(emails.length, 3);
+  } finally {
+    AppConfig.findOne = originalFindOne;
+    invalidateConfigCache();
   }
 });
 

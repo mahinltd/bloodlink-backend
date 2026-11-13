@@ -63,3 +63,43 @@ export const sendUrgentRequestEmail = async (
     <p style="font-size:14px;color:#333333;text-align:center;margin:20px 0;">আপনি যদি দিতে পারেন, এখনই <b>BloodLink</b> অ্যাপটি খুলুন। একটি ব্যাগ রক্ত, একটি জীবন।</p>
     <p style="font-size:11px;color:#aaaaaa;text-align:center;">BloodLink — রক্ত বিনামূল্যে, কেনাবেচা নিষিদ্ধ।</p>` }),
   });
+
+export const sendRequestNotificationEmail = async (
+  email,
+  { bloodGroup, hospitalName, bagsNeeded, neededBy, urgency, language = 'bn' }
+) => {
+  const isEnglish = language === 'en';
+  const labels = {
+    sos: isEnglish ? 'SOS blood request' : 'জরুরি SOS রক্তের অনুরোধ',
+    urgent: isEnglish ? 'Urgent blood request' : 'জরুরি রক্তের অনুরোধ',
+    normal: isEnglish ? 'Blood request near you' : 'আপনার কাছাকাছি রক্তের অনুরোধ',
+  };
+  const title = labels[urgency] || labels.normal;
+  const needed = new Date(neededBy).toLocaleString(isEnglish ? 'en-BD' : 'bn-BD');
+  const quantity = isEnglish ? 'Units needed' : 'প্রয়োজনীয় ব্যাগ';
+  const hospital = isEnglish ? 'Hospital' : 'হাসপাতাল';
+  const when = isEnglish ? 'Needed by' : 'প্রয়োজন';
+  const content = `
+    <h2 style="margin:0 0 12px;font-size:18px;color:#d32f2f;text-align:center;">${escapeHtml(title)}: ${escapeHtml(bloodGroup)}</h2>
+    <table role="presentation" style="width:100%;font-size:14px;color:#333333;border-collapse:collapse;">
+      <tr><td style="padding:6px 0;color:#888;">${hospital}</td><td style="padding:6px 0;">${escapeHtml(hospitalName)}</td></tr>
+      <tr><td style="padding:6px 0;color:#888;">${quantity}</td><td style="padding:6px 0;">${escapeHtml(bagsNeeded)}</td></tr>
+      <tr><td style="padding:6px 0;color:#888;">${when}</td><td style="padding:6px 0;">${escapeHtml(needed)}</td></tr>
+    </table>
+    <p style="font-size:14px;text-align:center;margin:20px 0;">${isEnglish ? 'Open BloodLink to view the request and respond if you can help.' : 'অনুরোধটি দেখতে এবং সাহায্য করতে BloodLink অ্যাপ খুলুন।'}</p>
+    <p style="font-size:11px;color:#888888;text-align:center;">BloodLink — ${isEnglish ? 'Blood is free; selling is prohibited.' : 'রক্ত বিনামূল্যে, কেনাবেচা নিষিদ্ধ।'}</p>`;
+  const text = [
+    `${title}: ${bloodGroup}`,
+    `${hospital}: ${hospitalName}`,
+    `${quantity}: ${bagsNeeded}`,
+    `${when}: ${needed}`,
+    isEnglish ? 'Open BloodLink to view and respond.' : 'অনুরোধটি দেখতে BloodLink অ্যাপ খুলুন।',
+  ].join('\n');
+
+  return sendEmail({
+    to: email,
+    subject: `${title}: ${bloodGroup}`,
+    html: renderBrandedEmail({ content }),
+    text,
+  });
+};

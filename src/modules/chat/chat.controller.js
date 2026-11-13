@@ -3,8 +3,9 @@ import { ok, created } from '../../utils/ApiResponse.js';
 import * as service from './chat.service.js';
 import { getIO } from '../../socket/index.js';
 import { isUserOnline } from '../../socket/chat.handler.js';
-import { sendPushToUsers } from '../notifications/fcm.service.js';
+import { notifyOne } from '../notifications/notifications.service.js';
 import { User } from '../users/user.model.js';
+import { logger } from '../../utils/logger.js';
 
 export const list = asyncHandler(async (req, res) =>
   ok(res, await service.listConversations(req.auth.userId, req.query))
@@ -32,13 +33,14 @@ export const sendRest = asyncHandler(async (req, res) => {
   if (!isUserOnline(recipientId)) {
     const sender = await User.findById(req.auth.userId).select('name').lean();
     const preview = message.text ? message.text.slice(0, 80) : '📷 ছবি';
-    sendPushToUsers([recipientId], {
-      channel: 'messages',
+    notifyOne({
+      userId: recipientId,
       type: 'message',
       title: { bn: sender?.name || '', en: sender?.name || '' },
       body: { bn: preview, en: preview },
       data: { conversationId: String(req.params.id) },
-    }).catch(() => {});
+      respectPreference: true,
+    }).catch((error) => logger.error('message notification failed:', error.message));
   }
   created(res, { message });
 });
