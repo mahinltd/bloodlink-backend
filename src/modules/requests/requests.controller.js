@@ -26,6 +26,10 @@ export const get = asyncHandler(async (req, res) =>
 	ok(res, await service.getRequest(req.params.id, req.auth.userId))
 );
 
+export const revealPhone = asyncHandler(async (req, res) =>
+	ok(res, await service.revealRequestPhone(req.params.id, req.auth.userId), 'Phone number revealed')
+);
+
 export const update = asyncHandler(async (req, res) =>
 	ok(res, await service.updateRequest(req.params.id, req.auth.userId, req.body), 'Request updated')
 );

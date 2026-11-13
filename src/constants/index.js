@@ -69,6 +69,8 @@ export const DEFAULT_BUSINESS_RULES = {
   requests: {
     dailyLimit: 2,
     newAccountDailyLimit: 1,
+    sosDailyLimit: 2,
+    newAccountSosDailyLimit: 1,
     maxBags: 10,
     autoHideReportCount: 3,
   },

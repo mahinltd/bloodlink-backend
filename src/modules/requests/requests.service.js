@@ -59,7 +59,8 @@ export const createRequest = async (userId, payload) => {
 
   // দৈনিক সীমা — নতুন অ্যাকাউন্টে (৭ দিনের কম) ১টি, পরে ২টি
   const accountAgeDays = (Date.now() - user.createdAt.getTime()) / DAY;
-  const dailyLimit = accountAgeDays < 7 ? rules.requests.newAccountDailyLimit : rules.requests.dailyLimit;
+  const isNewAccount = accountAgeDays < 7;
+  const dailyLimit = isNewAccount ? rules.requests.newAccountDailyLimit : rules.requests.dailyLimit;
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const todayCount = await BloodRequest.countDocuments({ requesterId: userId, createdAt: { $gte: startOfDay } });
@@ -77,6 +78,19 @@ export const createRequest = async (userId, payload) => {
   }
 
   const urgency = resolveUrgency(payload.urgency, neededBy, rules.matching);
+  if (urgency === 'sos') {
+    const sosDailyLimit = isNewAccount
+      ? rules.requests.newAccountSosDailyLimit
+      : rules.requests.sosDailyLimit;
+    const sosCount = await BloodRequest.countDocuments({
+      requesterId: userId,
+      urgency: 'sos',
+      createdAt: { $gte: startOfDay },
+    });
+    if (sosCount >= sosDailyLimit) {
+      throw ApiError.tooMany(`You can create at most ${sosDailyLimit} SOS request(s) per day`, 'DAILY_SOS_REQUEST_LIMIT');
+    }
+  }
   const banned = containsBannedWord(payload.note?.bn, payload.note?.en);
   const radii = rules.matching.radiiKm || rules.matching.radiusStepsKm || [10, 25, 50];
 
@@ -317,6 +331,11 @@ export const getRequest = async (id, userId) => {
     responsesCount,
     myResponse: myResponse?.status || null,
   };
+};
+
+export const revealRequestPhone = async (id, userId) => {
+  const { request } = await getRequest(id, userId);
+  return { phone: request.attendantPhone };
 };
 
 export const matchingPreview = async (requestId, userId) => {

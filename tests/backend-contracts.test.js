@@ -13,7 +13,7 @@ import { register } from '../src/modules/auth/auth.service.js';
 import { getBusinessRules, invalidateConfigCache } from '../src/modules/config/config.service.js';
 import { AppConfig } from '../src/modules/config/appConfig.model.js';
 import { Notification } from '../src/modules/notifications/notification.model.js';
-import { notifyRequestDonors } from '../src/modules/notifications/notifications.service.js';
+import { notifyOne, notifyRequestDonors } from '../src/modules/notifications/notifications.service.js';
 import { fanOutRequestNotifications } from '../src/modules/matching/matching.service.js';
 import { DonorProfile } from '../src/modules/users/donorProfile.model.js';
 import { getMe, acceptTerms } from '../src/modules/users/users.service.js';
@@ -24,6 +24,7 @@ import {
   listRequests,
   listRespondedRequests,
   listSosRequests,
+  revealRequestPhone,
 } from '../src/modules/requests/requests.service.js';
 import { BloodRequest } from '../src/modules/requests/bloodRequest.model.js';
 import { RequestResponse } from '../src/modules/requests/requestResponse.model.js';
@@ -32,6 +33,7 @@ import { signAccessToken } from '../src/utils/jwt.util.js';
 import { errorMiddleware } from '../src/middlewares/error.middleware.js';
 import { donorDirectoryLimiter, requestFeedLimiter } from '../src/middlewares/rateLimiter.middleware.js';
 import requestRoutes from '../src/modules/requests/requests.routes.js';
+import donorRoutes from '../src/modules/donors/donors.routes.js';
 import locationRoutes from '../src/modules/locations/locations.routes.js';
 import { Union } from '../src/modules/locations/union.model.js';
 import { Village } from '../src/modules/locations/village.model.js';
@@ -267,6 +269,53 @@ test('create request persists the additional contact and hospital fields', async
     BloodRequest.countDocuments = originals.requestCount;
     BloodRequest.create = originals.requestCreate;
     BloodRequest.findById = originals.requestFindById;
+    invalidateConfigCache();
+  }
+});
+
+test('new accounts are limited to one SOS request per day', async () => {
+  const originals = {
+    configFindOne: AppConfig.findOne,
+    userFindById: User.findById,
+    requestCount: BloodRequest.countDocuments,
+    requestCreate: BloodRequest.create,
+  };
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({ businessRules: {} }),
+  });
+  User.findById = async () => ({
+    status: 'active',
+    createdAt: new Date(Date.now() - 2 * 86400000),
+  });
+  BloodRequest.countDocuments = async (filter) => (filter.urgency === 'sos' ? 1 : 0);
+  BloodRequest.create = async () => {
+    throw new Error('SOS daily limit should prevent request creation');
+  };
+  invalidateConfigCache();
+
+  try {
+    await assert.rejects(
+      createRequest('requester-id', {
+        patientName: 'Patient',
+        bloodGroup: 'A+',
+        bagsNeeded: 1,
+        neededBy: new Date(Date.now() + 2 * 3600000),
+        urgency: 'sos',
+        hospitalName: 'City Hospital',
+        coordinates: { lat: 23.7, lng: 90.4 },
+        attendantName: 'Attendant',
+        attendantPhone: '01712345678',
+      }),
+      (error) => error.code === 'DAILY_SOS_REQUEST_LIMIT'
+    );
+  } finally {
+    AppConfig.findOne = originals.configFindOne;
+    User.findById = originals.userFindById;
+    BloodRequest.countDocuments = originals.requestCount;
+    BloodRequest.create = originals.requestCreate;
     invalidateConfigCache();
   }
 });
@@ -564,6 +613,7 @@ test('donor and request phones are available to verified viewers regardless of l
   const userId = '6af4b2c56bce675945a7eb7d';
   const viewerId = '6af4b2c56bce675945a7eb7e';
   const phone = '01712345678';
+  let revealFilter;
   AppConfig.findOne = () => ({
     sort() {
       return this;
@@ -613,12 +663,20 @@ test('donor and request phones are available to verified viewers regardless of l
       modes: { donor: true },
     }),
   });
-  User.findOne = () => ({
-    select() {
-      return this;
-    },
-    lean: async () => ({ phone, status: 'active', emailVerifiedAt: new Date() }),
-  });
+  User.findOne = (filter) => {
+    revealFilter = filter;
+    return {
+      select() {
+        return this;
+      },
+      lean: async () => ({
+        phone,
+        status: 'active',
+        emailVerifiedAt: new Date(),
+        modes: { donor: true },
+      }),
+    };
+  };
   BloodRequest.findById = () => ({
     populate() {
       return this;
@@ -648,8 +706,10 @@ test('donor and request phones are available to verified viewers regardless of l
     const donor = await getDonor(userId, viewerId, {});
     assert.equal(donor.donor.phone, phone);
     assert.equal(await revealPhone(viewerId, userId).then((result) => result.phone), phone);
+    assert.equal(revealFilter['modes.donor'], true);
     const request = await getRequest('request-id', userId);
     assert.equal(request.request.attendantPhone, phone);
+    assert.deepEqual(await revealRequestPhone('request-id', userId), { phone });
   } finally {
     AppConfig.findOne = originals.configFindOne;
     DonorProfile.findOne = originals.profileFindOne;
@@ -820,6 +880,44 @@ test('request fan-out sends localized SOS and urgent email by preference and use
   }
 });
 
+test('offline chat inbox notifications honor the messages preference independently from push', async () => {
+  const originalFindById = User.findById;
+  const originalCreate = Notification.create;
+  let created = 0;
+  let prefs = { push: true, messages: false };
+  User.findById = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({ status: 'active', notificationPrefs: prefs }),
+  });
+  Notification.create = async (document) => {
+    created += 1;
+    return document;
+  };
+
+  try {
+    const args = {
+      userId: '6af4b2c56bce675945a7eb70',
+      type: 'message',
+      title: { bn: 'নতুন বার্তা', en: 'New message' },
+      body: { bn: 'হ্যালো', en: 'Hello' },
+      data: { conversationId: '6af4b2c56bce675945a7eb71' },
+      respectPreference: true,
+    };
+    assert.equal(await notifyOne(args), null);
+    assert.equal(created, 0);
+
+    prefs = { push: false, messages: true };
+    const notification = await notifyOne(args);
+    assert.equal(notification.type, 'message');
+    assert.equal(created, 1);
+  } finally {
+    User.findById = originalFindById;
+    Notification.create = originalCreate;
+  }
+});
+
 test('protected request feed rejects anonymous and unverified users', async () => {
   const originalFindById = User.findById;
   User.findById = () => ({
@@ -836,6 +934,35 @@ test('protected request feed rejects anonymous and unverified users', async () =
 
   try {
     const url = `http://127.0.0.1:${server.address().port}/v1/requests`;
+    const anonymous = await fetch(url);
+    assert.equal(anonymous.status, 401);
+
+    const token = signAccessToken({ sub: '6af4b2c56bce675945a7eb7e', scope: 'user' });
+    const unverified = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(unverified.status, 401);
+    assert.equal((await unverified.json()).error.code, 'ACCOUNT_NOT_ACTIVE');
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    User.findById = originalFindById;
+  }
+});
+
+test('donor directory rejects anonymous and unverified viewers before returning phone data', async () => {
+  const originalFindById = User.findById;
+  User.findById = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({ status: 'active', emailVerifiedAt: null }),
+  });
+  const app = express();
+  app.use('/v1/donors', donorRoutes);
+  app.use(errorMiddleware);
+  const server = app.listen(0);
+  await once(server, 'listening');
+
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/v1/donors`;
     const anonymous = await fetch(url);
     assert.equal(anonymous.status, 401);
 

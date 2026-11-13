@@ -76,6 +76,10 @@ export const getBusinessRules = async () => {
   const flatRequests = {
     ...(remote.dailyRequestLimit !== undefined ? { dailyLimit: remote.dailyRequestLimit } : {}),
     ...(remote.newAccountRequestLimit !== undefined ? { newAccountDailyLimit: remote.newAccountRequestLimit } : {}),
+    ...(remote.sosDailyLimit !== undefined ? { sosDailyLimit: remote.sosDailyLimit } : {}),
+    ...(remote.newAccountSosDailyLimit !== undefined
+      ? { newAccountSosDailyLimit: remote.newAccountSosDailyLimit }
+      : {}),
     ...(remote.maxBags !== undefined ? { maxBags: remote.maxBags } : {}),
   };
   const flatDonationCard = remote.donationCardCooldownDays !== undefined
@@ -127,7 +131,12 @@ export const getPublicConfig = async () => {
         featureFlags: cfg.featureFlags,
         rules: {
           donor: rules.donor,
-          requests: { maxBags: rules.requests.maxBags, dailyLimit: rules.requests.dailyLimit },
+          requests: {
+            maxBags: rules.requests.maxBags,
+            dailyLimit: rules.requests.dailyLimit,
+            sosDailyLimit: rules.requests.sosDailyLimit,
+            newAccountSosDailyLimit: rules.requests.newAccountSosDailyLimit,
+          },
           matching: {
             sosMaxHours: rules.matching.sosMaxHours,
             urgentHours: rules.matching.urgentHours,
@@ -161,7 +170,12 @@ export const getPublicConfig = async () => {
         featureFlags: {},
         rules: {
           donor: rules.donor,
-          requests: { maxBags: rules.requests.maxBags, dailyLimit: rules.requests.dailyLimit },
+          requests: {
+            maxBags: rules.requests.maxBags,
+            dailyLimit: rules.requests.dailyLimit,
+            sosDailyLimit: rules.requests.sosDailyLimit,
+            newAccountSosDailyLimit: rules.requests.newAccountSosDailyLimit,
+          },
           matching: {
             sosMaxHours: rules.matching.sosMaxHours,
             urgentHours: rules.matching.urgentHours,

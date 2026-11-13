@@ -193,6 +193,7 @@ export const revealPhone = async (_viewerId, donorUserId) => {
     _id: donorUserId,
     status: 'active',
     emailVerifiedAt: { $ne: null },
+    'modes.donor': true,
   })
     .select('phone')
     .lean();

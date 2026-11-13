@@ -15,6 +15,7 @@ requestRoutes.get('/mine', validate(v.paginationSchema), controller.listMine);
 requestRoutes.get('/responded', requestFeedLimiter, validate(v.paginationSchema), controller.listResponded);
 requestRoutes.get('/:id/matching-preview', validate(v.idParamSchema), controller.matchingPreview);
 requestRoutes.get('/:id/responses', requestFeedLimiter, validate(v.idParamSchema), controller.listResponses);
+requestRoutes.post('/:id/reveal-phone', requestFeedLimiter, validate(v.idParamSchema), controller.revealPhone);
 requestRoutes.post('/:id/respond', validate(v.respondSchema), controller.respond);
 requestRoutes.post('/:id/confirm-donation', validate(v.confirmDonationSchema), controller.confirmDonation);
 requestRoutes.post('/:id/fulfill', validate(v.idParamSchema), controller.fulfill);
