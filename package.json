@@ -9,6 +9,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/seed.js",
+    "seed:demo": "node scripts/seedDemo.js",
+    "seed:demo:cleanup": "node scripts/seedDemo.js --cleanup",
     "test": "node --test"
   },
   "keywords": [

@@ -529,6 +529,34 @@ Register devices with `POST /me/devices`:
 
 Chat uses `POST /conversations` with `{ "userId": "<user-id>", "requestId": "<request-id>" }`, `GET /conversations`, `GET /conversations/:id/messages`, `POST /conversations/:id/messages`, and `POST /conversations/:id/read`. Socket.IO events include `message:send`, `message:new`, `message:delivered`, and `message:seen`. When a recipient is offline, a `message` inbox notification and FCM push are attempted; `notificationPrefs.messages=false` suppresses both. Online delivery uses Socket.IO.
 
+### Demo data
+
+The demo seed creates eight verified demo donor accounts, donor profiles, requests, and donation history. If `--owner-email` identifies an existing user, it also creates linked requests, responses, conversations/messages, inbox notifications, and donor history when applicable. Owner accounts are never created, updated, or deleted. Inserts use models directly; matching, FCM, email, Socket.IO, and notification services are not called. Demo accounts use random password hashes that are never printed and `.invalid` email addresses.
+
+Before any write, take and verify a database backup using the provider's supported backup procedure. There is no staging environment. Use the Render MongoDB URI only in the current PowerShell process; do not put it in `.env`, source control, or command arguments. The URI is read from the prompt and is never printed by the script:
+
+```powershell
+$env:MONGODB_URI = Read-Host "Paste the Render MongoDB URI"
+
+# Read-only preview: counts, DB name, masked host, index status, and collision checks.
+npm.cmd run seed:demo -- --owner-email "your-test-account@example.com" --lat 23.8103 --lng 90.4125 --phone-base "013000000"
+
+# Apply once the preview and verified backup are checked.
+npm.cmd run seed:demo -- --apply --confirm-db "<exact-database-name>" --owner-email "your-test-account@example.com" --lat 23.8103 --lng 90.4125 --phone-base "013000000"
+
+# Re-time only the request IDs recorded by this seed batch.
+npm.cmd run seed:demo -- --refresh --confirm-db "<exact-database-name>"
+
+# Preview cleanup, then delete only IDs recorded by this seed batch.
+npm.cmd run seed:demo:cleanup -- --dry-run
+npm.cmd run seed:demo:cleanup -- --confirm-db "<exact-database-name>"
+
+# Remove the URI from this PowerShell process when finished.
+Remove-Item Env:MONGODB_URI
+```
+
+`--confirm-db` must exactly match the connected database name. Apply/refresh/cleanup stop when more than 25 non-demo users exist unless `--force` is supplied; `--force` does not broaden cleanup beyond logged IDs. Generated phone numbers follow the Bangladeshi mobile format but could theoretically belong to real people—never dial them in tests. The script checks required indexes read-only and does not create any; production auto-indexing is disabled, so missing geospatial indexes can break coordinate-based features.
+
 ### Location filters
 
 Division/district/upazila/union lists are available without authentication at `GET /locations/divisions`, `/locations/districts?parentId=<divisionId>`, `/locations/upazilas?parentId=<districtId>`, and `/locations/unions?upazilaId=<upazilaId>`. Responses use `{ "items": [{ "_id": "...", "nameBn": "...", "nameEn": "..." }] }`.
