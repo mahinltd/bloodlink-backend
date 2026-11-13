@@ -4,6 +4,10 @@ import * as service from './users.service.js';
 
 export const getMe = asyncHandler(async (req, res) => ok(res, await service.getMe(req.auth.userId)));
 
+export const acceptTerms = asyncHandler(async (req, res) =>
+  ok(res, await service.acceptTerms(req.auth.userId, req.body.termsVersion), 'Terms accepted')
+);
+
 export const updateMe = asyncHandler(async (req, res) =>
   ok(res, await service.updateMe(req.auth.userId, req.body), 'Profile updated')
 );

@@ -5,6 +5,7 @@ const { Schema } = mongoose;
 const appConfigSchema = new Schema(
   {
     version: { type: Number, required: true, unique: true },
+    termsVersion: { type: String, default: '1.0.0' },
     status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', index: true },
     designTokens: { type: Schema.Types.Mixed, default: {} },
     featureFlags: { type: Schema.Types.Mixed, default: {} },

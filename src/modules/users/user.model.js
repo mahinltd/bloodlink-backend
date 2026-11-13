@@ -19,6 +19,7 @@ const userSchema = new Schema(
     },
     language: { type: String, enum: ['bn', 'en'], default: 'bn' },
     theme: { type: String, enum: ['light', 'dark', 'system'], default: 'system' },
+    acceptedTermsVersion: { type: String, default: null },
     notificationPrefs: {
       push: { type: Boolean, default: true },
       email: { type: Boolean, default: true },
@@ -33,6 +34,9 @@ const userSchema = new Schema(
     },
     consents: {
       termsAcceptedAt: { type: Date, default: null },
+      phonePublicInApp: { type: Boolean, default: false },
+      phonePublicInAppAcceptedAt: { type: Date, default: null },
+      phonePublicInAppTermsVersion: { type: String, default: null },
       contactAllowed: { type: Boolean, default: false },
       noBloodSelling: { type: Boolean, default: false },
     },

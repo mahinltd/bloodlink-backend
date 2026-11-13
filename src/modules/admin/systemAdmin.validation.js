@@ -23,6 +23,7 @@ const formBool = z
 // ── Config ──
 export const updateConfigDraftSchema = z
   .object({
+    termsVersion: z.string().trim().min(1).max(40).optional(),
     designTokens: z
       .object({
         light: z.record(z.string(), z.any()).optional(),

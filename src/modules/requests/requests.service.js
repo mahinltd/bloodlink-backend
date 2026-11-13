@@ -12,6 +12,7 @@ import { BANNED_WORDS } from '../../constants/index.js';
 import { findMatchingDonors, matchAndNotify } from '../matching/matching.service.js';
 import { notifyOne } from '../notifications/notifications.service.js';
 import { logger } from '../../utils/logger.js';
+import { normalMaxDays, resolveUrgency } from './urgencyRules.js';
 
 const DAY = 86400000;
 
@@ -50,15 +51,12 @@ export const createRequest = async (userId, payload) => {
   if (neededBy.getTime() <= Date.now()) {
     throw ApiError.badRequest('Needed-by time must be in the future', 'INVALID_NEEDED_BY');
   }
-  const maxDaysAhead = rules.matching.normalMaxDays ?? rules.matching.normalExpiryDays ?? 7;
+  const maxDaysAhead = normalMaxDays(rules.matching);
   if (neededBy.getTime() - Date.now() > maxDaysAhead * DAY) {
     throw ApiError.badRequest(`Needed-by must be within ${maxDaysAhead} days`, 'NEEDED_BY_TOO_FAR');
   }
 
-  // কনফিগার করা সময়সীমার মধ্যে হলে স্বয়ংক্রিয়ভাবে জরুরি
-  const urgentThresholdHours = rules.matching.urgentHours ?? rules.matching.urgentThresholdHours ?? 48;
-  const autoUrgent = neededBy.getTime() - Date.now() <= urgentThresholdHours * 3600000;
-  const urgency = payload.urgency === 'urgent' || autoUrgent ? 'urgent' : 'normal';
+  const urgency = resolveUrgency(payload.urgency, neededBy, rules.matching);
   const banned = containsBannedWord(payload.note?.bn, payload.note?.en);
   const radii = rules.matching.radiiKm || rules.matching.radiusStepsKm || [10, 25, 50];
 
@@ -113,8 +111,30 @@ export const listRequests = async (query) => {
     pipeline.push({ $match: match });
   }
   pipeline.push(
-    { $addFields: { urgentFirst: { $cond: [{ $eq: ['$urgency', 'urgent'] }, 0, 1] } } },
-    { $sort: hasCoordinates ? { urgentFirst: 1, distanceMeters: 1 } : { urgentFirst: 1, createdAt: -1 } },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'requesterId',
+        foreignField: '_id',
+        as: '_requester',
+      },
+    },
+    { $match: { '_requester.status': 'active', '_requester.emailVerifiedAt': { $ne: null } } },
+    { $project: { _requester: 0 } },
+    {
+      $addFields: {
+        urgencyRank: {
+          $switch: {
+            branches: [
+              { case: { $eq: ['$urgency', 'sos'] }, then: 0 },
+              { case: { $eq: ['$urgency', 'urgent'] }, then: 1 },
+            ],
+            default: 2,
+          },
+        },
+      },
+    },
+    { $sort: hasCoordinates ? { urgencyRank: 1, distanceMeters: 1 } : { urgencyRank: 1, createdAt: -1 } },
     { $skip: (page - 1) * limit },
     { $limit: limit }
   );
@@ -139,8 +159,14 @@ export const listMine = async (userId, { page, limit }) => {
 };
 
 export const getRequest = async (id, userId) => {
-  const request = await BloodRequest.findById(id).populate('requesterId', 'name avatar').lean();
-  if (!request) throw notFound();
+  const request = await BloodRequest.findById(id)
+    .populate({
+      path: 'requesterId',
+      select: 'name avatar status emailVerifiedAt',
+      match: { status: 'active', emailVerifiedAt: { $ne: null } },
+    })
+    .lean();
+  if (!request || !request.requesterId) throw notFound();
   if (request.isHidden && request.requesterId._id.toString() !== userId) throw notFound();
 
   const responsesCount = await RequestResponse.countDocuments({
@@ -174,7 +200,6 @@ export const updateRequest = async (requestId, ownerId, payload) => {
   if (request.requesterId.toString() !== ownerId) throw ApiError.forbidden('Not your request', 'NOT_REQUEST_OWNER');
   if (request.status !== 'open') throw ApiError.badRequest('Only open requests can be edited', 'REQUEST_NOT_OPEN');
 
-  const rules = await getBusinessRules();
   const allowed = [
     'patientName', 'bloodGroup', 'component', 'bagsNeeded', 'hospitalName',
     'attendantName', 'attendantRelation', 'attendantPhone',
@@ -185,14 +210,19 @@ export const updateRequest = async (requestId, ownerId, payload) => {
   if (payload.coordinates) {
     request.location = { type: 'Point', coordinates: [payload.coordinates.lng, payload.coordinates.lat] };
   }
-  if (payload.neededBy) {
-    const neededBy = new Date(payload.neededBy);
-    if (neededBy.getTime() <= Date.now()) throw ApiError.badRequest('Needed-by time must be in the future', 'INVALID_NEEDED_BY');
+  if (payload.neededBy !== undefined || payload.urgency !== undefined) {
+    const rules = await getBusinessRules();
+    const neededBy = payload.neededBy !== undefined ? new Date(payload.neededBy) : request.neededBy;
+    if (neededBy.getTime() <= Date.now()) {
+      throw ApiError.badRequest('Needed-by time must be in the future', 'INVALID_NEEDED_BY');
+    }
+    const maxDaysAhead = normalMaxDays(rules.matching);
+    if (neededBy.getTime() - Date.now() > maxDaysAhead * DAY) {
+      throw ApiError.badRequest(`Needed-by must be within ${maxDaysAhead} days`, 'NEEDED_BY_TOO_FAR');
+    }
     request.neededBy = neededBy;
     request.expiresAt = neededBy;
-    const urgentThresholdHours = rules.matching.urgentHours ?? rules.matching.urgentThresholdHours ?? 48;
-    const autoUrgent = neededBy.getTime() - Date.now() <= urgentThresholdHours * 3600000;
-    request.urgency = payload.urgency === 'urgent' || autoUrgent ? 'urgent' : 'normal';
+    request.urgency = resolveUrgency(payload.urgency, neededBy, rules.matching);
   }
 
   const banned = containsBannedWord(request.note?.bn, request.note?.en);
@@ -274,17 +304,22 @@ export const listResponses = async (requestId, ownerId) => {
 
   const responses = await RequestResponse.find({ requestId })
     .sort({ respondedAt: -1 })
-    .populate('donorId', 'name avatar phone privacy')
+    .populate({
+      path: 'donorId',
+      select: 'name avatar phone status emailVerifiedAt',
+      match: { status: 'active', emailVerifiedAt: { $ne: null } },
+    })
     .lean();
 
-  const items = responses.map((response) => {
+  const items = responses.filter((response) => response.donorId).map((response) => {
     const donor = response.donorId || {};
-    const showPhone = donor.privacy?.showPhone !== 'never' && ['accepted', 'donated'].includes(response.status);
     return {
       id: response._id,
       status: response.status,
       respondedAt: response.respondedAt,
-      donor: { id: donor._id, name: donor.name, avatar: donor.avatar, phone: showPhone ? donor.phone : null },
+      donor: donor._id
+        ? { id: donor._id, name: donor.name, avatar: donor.avatar, phone: donor.phone }
+        : null,
     };
   });
   return { responses: items };

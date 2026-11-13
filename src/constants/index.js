@@ -15,7 +15,7 @@ export const REQUEST_STATUS = [
   'expired',
 ];
 
-export const REQUEST_URGENCY = ['urgent', 'normal'];
+export const REQUEST_URGENCY = ['normal', 'urgent', 'sos'];
 export const RESPONSE_STATUS = ['accepted', 'declined', 'donated'];
 export const OTP_PURPOSES = ['verify_email', 'reset_password'];
 
@@ -55,7 +55,10 @@ export const DEFAULT_BUSINESS_RULES = {
     thresholdScore: 80,
     radiusStepsKm: [10, 25, 50],
     escalationMinutes: 30,
-    urgentThresholdHours: 48,
+    sosMaxHours: 6,
+    urgentHours: 24,
+    urgentThresholdHours: 24,
+    normalMaxDays: 7,
     normalExpiryDays: 7,
     rareGroups: ['O-', 'AB-'],
     perDonorPerDay: 5,

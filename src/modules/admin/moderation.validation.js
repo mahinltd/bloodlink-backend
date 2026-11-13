@@ -33,7 +33,7 @@ export const adminRequestsQuerySchema = z.object({
   page,
   limit,
   status: z.enum(["open", "fulfilled", "cancelled", "expired"]).optional(),
-  urgency: z.enum(["urgent", "normal"]).optional(),
+  urgency: z.enum(["normal", "urgent", "sos"]).optional(),
   flagged: boolStr,
   hidden: boolStr,
   q: z.string().max(80).optional(),

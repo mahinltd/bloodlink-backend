@@ -10,6 +10,15 @@ import { logger } from '../../utils/logger.js';
 let configCache = { doc: null, payload: null, etag: null, at: 0 };
 let i18nCache = { bn: null, en: null, at: 0 };
 const TTL = 60 * 1000;
+export const DEFAULT_TERMS_VERSION = '1.0.0';
+export const DEFAULT_LEGAL_TEXTS = {
+  termsUrl: 'https://bloodlink.tech/terms',
+  privacyUrl: 'https://bloodlink.tech/privacy',
+  phoneContact: {
+    bn: 'জীবন বাঁচানোর উদ্দেশ্যে এই কল ও যোগাযোগ ব্যবস্থা দেওয়া হয়েছে। হয়রানি, স্প্যাম বা প্র্যাঙ্ক কল, রক্তের জন্য টাকা চাওয়া, বিপণন বা পুনর্বিক্রয়ের জন্য ফোন নম্বর সংগ্রহ, কিংবা হুমকি দেওয়া নিষিদ্ধ। এমন অপব্যবহারে অ্যাকাউন্ট সাময়িক স্থগিত বা স্থায়ীভাবে নিষিদ্ধ করা হতে পারে এবং প্রযোজ্য আইন অনুযায়ী আইনি ব্যবস্থা নেওয়া হতে পারে।',
+    en: 'The call and contact system is provided to save lives. Harassment, spam or prank calls, asking for money for blood, collecting phone numbers for marketing or resale, and threats are prohibited. Misuse may result in suspension, a permanent ban, and legal action under applicable law.',
+  },
+};
 
 export const invalidateConfigCache = () => {
   configCache = { doc: null, payload: null, etag: null, at: 0 };
@@ -38,11 +47,32 @@ export const getBusinessRules = async () => {
     ...(remote.thresholdScore !== undefined ? { thresholdScore: remote.thresholdScore } : {}),
     ...(remote.radiusStepsKm !== undefined ? { radiusStepsKm: remote.radiusStepsKm } : {}),
     ...(remote.escalationMinutes !== undefined ? { escalationMinutes: remote.escalationMinutes } : {}),
-    ...(remote.urgentThresholdHours !== undefined ? { urgentThresholdHours: remote.urgentThresholdHours } : {}),
     ...(remote.normalExpiryDays !== undefined ? { normalExpiryDays: remote.normalExpiryDays } : {}),
+    ...(remote.sosMaxHours !== undefined ? { sosMaxHours: remote.sosMaxHours } : {}),
+    ...(remote.urgentHours !== undefined ? { urgentHours: remote.urgentHours } : {}),
+    ...(remote.normalMaxDays !== undefined ? { normalMaxDays: remote.normalMaxDays } : {}),
     ...(remote.perDonorPerDay !== undefined ? { perDonorPerDay: remote.perDonorPerDay } : {}),
     ...(remote.urgentEmailTopN !== undefined ? { urgentEmailTopN: remote.urgentEmailTopN } : {}),
   };
+  const matchingConfig = { ...(remote.matching || {}) };
+  delete matchingConfig.urgentThresholdHours;
+  const matching = {
+    ...DEFAULT_BUSINESS_RULES.matching,
+    ...flatMatching,
+    ...matchingConfig,
+  };
+  matching.sosMaxHours =
+    matchingConfig.sosMaxHours ?? remote.sosMaxHours ?? DEFAULT_BUSINESS_RULES.matching.sosMaxHours;
+  matching.urgentHours =
+    matchingConfig.urgentHours ?? remote.urgentHours ?? DEFAULT_BUSINESS_RULES.matching.urgentHours;
+  matching.normalMaxDays =
+    matchingConfig.normalMaxDays ??
+    remote.normalMaxDays ??
+    matchingConfig.normalExpiryDays ??
+    remote.normalExpiryDays ??
+    DEFAULT_BUSINESS_RULES.matching.normalMaxDays;
+  matching.urgentThresholdHours = matching.urgentHours;
+  matching.normalExpiryDays = matching.normalMaxDays;
   const flatRequests = {
     ...(remote.dailyRequestLimit !== undefined ? { dailyLimit: remote.dailyRequestLimit } : {}),
     ...(remote.newAccountRequestLimit !== undefined ? { newAccountDailyLimit: remote.newAccountRequestLimit } : {}),
@@ -54,7 +84,7 @@ export const getBusinessRules = async () => {
   return {
     donor: { ...DEFAULT_BUSINESS_RULES.donor, ...flatDonor, ...(remote.donor || {}) },
     otp: { ...DEFAULT_BUSINESS_RULES.otp, ...(remote.otp || {}) },
-    matching: { ...DEFAULT_BUSINESS_RULES.matching, ...flatMatching, ...(remote.matching || {}) },
+    matching,
     requests: { ...DEFAULT_BUSINESS_RULES.requests, ...flatRequests, ...(remote.requests || {}) },
     donationCard: {
       ...DEFAULT_BUSINESS_RULES.donationCard,
@@ -63,6 +93,11 @@ export const getBusinessRules = async () => {
     },
     phoneRevealDailyLimit: remote.phoneRevealDailyLimit ?? 20,
   };
+};
+
+export const getTermsVersion = async () => {
+  const cfg = await getPublishedConfig();
+  return cfg?.termsVersion || DEFAULT_TERMS_VERSION;
 };
 
 /* ---------------- পাবলিক কনফিগ পেলোড + ETag ---------------- */
@@ -74,13 +109,19 @@ export const getPublicConfig = async () => {
 
   const cfg = await getPublishedConfig(true);
   const rules = await getBusinessRules();
-  const legalTexts = cfg?.legalTexts && Object.keys(cfg.legalTexts).length
+  const storedLegalTexts = cfg?.legalTexts && Object.keys(cfg.legalTexts).length
     ? cfg.legalTexts
     : cfg?.legal || {};
+  const legalTexts = {
+    ...DEFAULT_LEGAL_TEXTS,
+    ...storedLegalTexts,
+    phoneContact: { ...DEFAULT_LEGAL_TEXTS.phoneContact, ...(storedLegalTexts.phoneContact || {}) },
+  };
 
   const payload = cfg
     ? {
         version: cfg.version,
+        termsVersion: cfg.termsVersion || DEFAULT_TERMS_VERSION,
         updatedAt: cfg.publishedAt,
         designTokens: cfg.designTokens,
         featureFlags: cfg.featureFlags,
@@ -88,7 +129,10 @@ export const getPublicConfig = async () => {
           donor: rules.donor,
           requests: { maxBags: rules.requests.maxBags, dailyLimit: rules.requests.dailyLimit },
           matching: {
-            urgentThresholdHours: rules.matching.urgentThresholdHours,
+            sosMaxHours: rules.matching.sosMaxHours,
+            urgentHours: rules.matching.urgentHours,
+            normalMaxDays: rules.matching.normalMaxDays,
+            urgentThresholdHours: rules.matching.urgentHours,
             normalExpiryDays: rules.matching.normalExpiryDays,
             radiusOptionsKm: [5, 10, 25, 50],
           },
@@ -111,6 +155,7 @@ export const getPublicConfig = async () => {
       }
     : {
         version: 0,
+        termsVersion: DEFAULT_TERMS_VERSION,
         updatedAt: null,
         designTokens: {},
         featureFlags: {},
@@ -118,7 +163,10 @@ export const getPublicConfig = async () => {
           donor: rules.donor,
           requests: { maxBags: rules.requests.maxBags, dailyLimit: rules.requests.dailyLimit },
           matching: {
-            urgentThresholdHours: rules.matching.urgentThresholdHours,
+            sosMaxHours: rules.matching.sosMaxHours,
+            urgentHours: rules.matching.urgentHours,
+            normalMaxDays: rules.matching.normalMaxDays,
+            urgentThresholdHours: rules.matching.urgentHours,
             normalExpiryDays: rules.matching.normalExpiryDays,
             radiusOptionsKm: [5, 10, 25, 50],
           },
@@ -128,7 +176,7 @@ export const getPublicConfig = async () => {
         contact: {},
         developerInfo: {},
         legal: {},
-        legalTexts: {},
+        legalTexts: DEFAULT_LEGAL_TEXTS,
         maintenance: { enabled: false },
         bloodCompatibility: COMPATIBLE_DONORS,
       };
@@ -162,6 +210,7 @@ export const getTranslationMap = async (lang) => {
 
 const DEFAULT_CONFIG = {
   version: 1,
+  termsVersion: DEFAULT_TERMS_VERSION,
   status: 'published',
   designTokens: {
     light: {
@@ -228,10 +277,7 @@ const DEFAULT_CONFIG = {
     termsUrl: 'https://bloodlink.tech/terms',
     privacyUrl: 'https://bloodlink.tech/privacy',
   },
-  legalTexts: {
-    termsUrl: 'https://bloodlink.tech/terms',
-    privacyUrl: 'https://bloodlink.tech/privacy',
-  },
+  legalTexts: DEFAULT_LEGAL_TEXTS,
   maintenance: {
     enabled: false,
     message: {

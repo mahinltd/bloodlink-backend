@@ -9,6 +9,7 @@ const router = Router();
 router.use(protect); // সব রুটে লগইন বাধ্যতামূলক
 
 router.get('/', ctrl.getMe);
+router.post('/accept-terms', validate(v.acceptTermsSchema), ctrl.acceptTerms);
 router.patch('/', validate(v.updateMeSchema), ctrl.updateMe);
 router.put('/avatar', validate(v.avatarSchema), ctrl.updateAvatar);
 router.post('/donor-profile', validate(v.donorProfileSchema), ctrl.enableDonorMode);

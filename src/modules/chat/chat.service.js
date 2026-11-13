@@ -37,7 +37,7 @@ const shapeConversation = (c, userId) => {
     id: c._id,
     requestId: c.requestId,
     participant: other
-      ? { id: other._id, name: other.name, avatar: other.avatar, status: other.status }
+      ? { id: other._id, name: other.name, avatar: other.avatar, phone: other.phone, status: other.status }
       : null,
     lastMessage: c.lastMessage,
     unreadCount: Number(c.unreadCounts?.[String(userId)] || 0),
@@ -50,7 +50,11 @@ export const listConversations = async (userId, { page, limit }) => {
     .sort({ 'lastMessage.createdAt': -1, updatedAt: -1 })
     .skip((page - 1) * limit)
     .limit(limit)
-    .populate('participants', 'name avatar status')
+    .populate({
+      path: 'participants',
+      select: 'name avatar phone status emailVerifiedAt',
+      match: { status: 'active', emailVerifiedAt: { $ne: null } },
+    })
     .lean();
   return { conversations: items.map((c) => shapeConversation(c, userId)), page, limit };
 };
@@ -60,8 +64,10 @@ export const startConversation = async (userId, { userId: targetUserId, requestI
   if (String(userId) === String(targetUserId)) {
     throw ApiError.badRequest('You cannot message yourself', 'CANNOT_MESSAGE_SELF');
   }
-  const target = await User.findById(targetUserId).select('status').lean();
-  if (!target || target.status !== 'active') throw ApiError.notFound('User not found', 'USER_NOT_FOUND');
+  const target = await User.findById(targetUserId).select('status emailVerifiedAt').lean();
+  if (!target || target.status !== 'active' || !target.emailVerifiedAt) {
+    throw ApiError.notFound('User not found', 'USER_NOT_FOUND');
+  }
 
   if (await isBlockedBetween(userId, targetUserId)) {
     throw ApiError.forbidden('Messaging is not allowed between you and this user', 'BLOCKED');
@@ -77,7 +83,11 @@ export const startConversation = async (userId, { userId: targetUserId, requestI
     });
   }
   const shaped = await Conversation.findById(conversation._id)
-    .populate('participants', 'name avatar status')
+    .populate({
+      path: 'participants',
+      select: 'name avatar phone status emailVerifiedAt',
+      match: { status: 'active', emailVerifiedAt: { $ne: null } },
+    })
     .lean();
   return { conversation: shapeConversation(shaped, userId) };
 };

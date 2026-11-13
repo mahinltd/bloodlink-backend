@@ -46,7 +46,15 @@ export const updateMeSchema = z.object({
   }),
 });
 
-export const donorProfileSchema = z.object({ body: donorFormSchema });
+export const donorProfileSchema = z.object({
+  body: donorFormSchema.extend({
+    consents: z.object({ phonePublicInApp: z.literal(true) }),
+  }),
+});
+
+export const acceptTermsSchema = z.object({
+  body: z.object({ termsVersion: z.string().trim().min(1).max(40) }),
+});
 
 export const avatarSchema = z.object({
   body: z.object({ avatar: z.string().min(1).max(500) }),

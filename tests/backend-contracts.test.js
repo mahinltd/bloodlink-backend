@@ -10,12 +10,27 @@ import { checkAppVersion } from '../src/modules/releases/releases.service.js';
 import { User } from '../src/modules/users/user.model.js';
 import { OtpCode } from '../src/modules/auth/otpCode.model.js';
 import { register } from '../src/modules/auth/auth.service.js';
+import { getBusinessRules, invalidateConfigCache } from '../src/modules/config/config.service.js';
+import { AppConfig } from '../src/modules/config/appConfig.model.js';
+import { DonorProfile } from '../src/modules/users/donorProfile.model.js';
+import { getMe, acceptTerms } from '../src/modules/users/users.service.js';
+import { getDonor, revealPhone, searchDonors } from '../src/modules/donors/donors.service.js';
+import { getRequest } from '../src/modules/requests/requests.service.js';
+import { BloodRequest } from '../src/modules/requests/bloodRequest.model.js';
+import { RequestResponse } from '../src/modules/requests/requestResponse.model.js';
+import { expectedUrgency, normalMaxDays, resolveUrgency } from '../src/modules/requests/urgencyRules.js';
+import { signAccessToken } from '../src/utils/jwt.util.js';
+import { errorMiddleware } from '../src/middlewares/error.middleware.js';
+import { donorDirectoryLimiter, requestFeedLimiter } from '../src/middlewares/rateLimiter.middleware.js';
+import requestRoutes from '../src/modules/requests/requests.routes.js';
 import locationRoutes from '../src/modules/locations/locations.routes.js';
 import { Union } from '../src/modules/locations/union.model.js';
 import { Village } from '../src/modules/locations/village.model.js';
 import { renderVerificationEmail } from '../src/modules/notifications/emailTemplates.js';
 import { generateOtp } from '../src/utils/otp.util.js';
 import { unionsQuerySchema, villagesQuerySchema } from '../src/modules/locations/locations.validation.js';
+import { donorProfileSchema } from '../src/modules/users/users.validation.js';
+import { registerSchema } from '../src/modules/auth/auth.validation.js';
 
 test('validated query defaults and transforms survive Express 5 query parsing', async () => {
   const app = express();
@@ -109,6 +124,314 @@ test('registration rejects every existing email before updating the user or crea
     User.findOne = originalFindOne;
     User.findByIdAndUpdate = originalFindByIdAndUpdate;
     OtpCode.findOneAndUpdate = originalOtpUpsert;
+  }
+});
+
+test('donor registration requires explicit phone-public consent before creating an account', async () => {
+  const originalFindOne = User.findOne;
+  const originalCreate = User.create;
+  let created = false;
+  User.findOne = async () => null;
+  User.create = async () => {
+    created = true;
+  };
+
+  try {
+    await assert.rejects(
+      register({ role: 'donor', email: 'donor@example.com', consents: { phonePublicInApp: false } }, {}),
+      (error) => error.code === 'PHONE_CONSENT_REQUIRED'
+    );
+    assert.equal(created, false);
+  } finally {
+    User.findOne = originalFindOne;
+    User.create = originalCreate;
+  }
+});
+
+test('donor registration and donor-mode payload validation require phone-public consent', () => {
+  const donor = {
+    bloodGroup: 'A+',
+    dob: '1990-01-01',
+    gender: 'male',
+    weightKg: 70,
+    coordinates: { lat: 23.7, lng: 90.4 },
+  };
+  const registration = {
+    role: 'donor',
+    name: 'Example Donor',
+    phone: '01712345678',
+    email: 'donor@example.com',
+    password: 'secure-password1',
+    consents: { termsAccepted: true, contactAllowed: true, noBloodSelling: true },
+    donor,
+  };
+  assert.equal(registerSchema.safeParse({ body: registration }).success, false);
+  assert.equal(
+    registerSchema.safeParse({
+      body: { ...registration, consents: { ...registration.consents, phonePublicInApp: true } },
+    }).success,
+    true
+  );
+  assert.equal(donorProfileSchema.safeParse({ body: donor }).success, false);
+  assert.equal(
+    donorProfileSchema.safeParse({ body: { ...donor, consents: { phonePublicInApp: true } } }).success,
+    true
+  );
+});
+
+test('urgency defaults follow the configured windows and reject mismatched selections', () => {
+  const now = Date.parse('2026-01-01T00:00:00.000Z');
+  const hours = (value) => now + value * 60 * 60 * 1000;
+  const rules = { sosMaxHours: 6, urgentHours: 24 };
+
+  assert.equal(expectedUrgency(hours(6), rules, now), 'sos');
+  assert.equal(expectedUrgency(hours(6) + 1, rules, now), 'urgent');
+  assert.equal(expectedUrgency(hours(24), rules, now), 'urgent');
+  assert.equal(expectedUrgency(hours(24) + 1, rules, now), 'normal');
+  assert.equal(resolveUrgency(undefined, hours(3), rules, now), 'sos');
+  assert.equal(normalMaxDays({ normalMaxDays: 7, urgentHours: 24 }), 7);
+  assert.throws(
+    () => normalMaxDays({ normalMaxDays: 1, urgentHours: 24 }),
+    (error) => error.code === 'INVALID_URGENCY_CONFIG'
+  );
+  assert.throws(
+    () => resolveUrgency('urgent', hours(3), rules, now),
+    (error) => error.code === 'URGENCY_WINDOW_MISMATCH'
+  );
+});
+
+test('legacy urgentThresholdHours no longer overrides SOS and urgent windows', async () => {
+  const originalFindOne = AppConfig.findOne;
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({ businessRules: { matching: { urgentThresholdHours: 48 } } }),
+  });
+  invalidateConfigCache();
+
+  try {
+    const rules = await getBusinessRules();
+    assert.equal(rules.matching.sosMaxHours, 6);
+    assert.equal(rules.matching.urgentHours, 24);
+    assert.equal(rules.matching.urgentThresholdHours, 24);
+  } finally {
+    AppConfig.findOne = originalFindOne;
+    invalidateConfigCache();
+  }
+});
+
+test('GET me reports outdated terms and accept-terms only accepts the current version', async () => {
+  const originalConfigFindOne = AppConfig.findOne;
+  const originalUserFindById = User.findById;
+  const originalDonorFindOne = DonorProfile.findOne;
+  const user = {
+    status: 'active',
+    acceptedTermsVersion: '1.0.0',
+    consents: { termsAcceptedAt: null },
+    toJSON() {
+      return { acceptedTermsVersion: this.acceptedTermsVersion };
+    },
+    async save() {},
+  };
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({ termsVersion: '2.0.0' }),
+  });
+  User.findById = async () => user;
+  DonorProfile.findOne = () => ({ lean: async () => null });
+  invalidateConfigCache();
+
+  try {
+    const me = await getMe('user-id');
+    assert.equal(me.termsVersion, '2.0.0');
+    assert.equal(me.needsTermsAcceptance, true);
+    await assert.rejects(
+      acceptTerms('user-id', '1.0.0'),
+      (error) => error.code === 'TERMS_VERSION_MISMATCH'
+    );
+    const accepted = await acceptTerms('user-id', '2.0.0');
+    assert.deepEqual(accepted, { accepted: true, acceptedTermsVersion: '2.0.0' });
+    assert.equal(user.acceptedTermsVersion, '2.0.0');
+  } finally {
+    AppConfig.findOne = originalConfigFindOne;
+    User.findById = originalUserFindById;
+    DonorProfile.findOne = originalDonorFindOne;
+    invalidateConfigCache();
+  }
+});
+
+test('donor and request phones are available to verified viewers regardless of legacy privacy settings', async () => {
+  const originals = {
+    configFindOne: AppConfig.findOne,
+    profileFindOne: DonorProfile.findOne,
+    profileAggregate: DonorProfile.aggregate,
+    userFindById: User.findById,
+    userFindOne: User.findOne,
+    requestFindById: BloodRequest.findById,
+    responseCount: RequestResponse.countDocuments,
+    responseFindOne: RequestResponse.findOne,
+  };
+  const userId = '6af4b2c56bce675945a7eb7d';
+  const viewerId = '6af4b2c56bce675945a7eb7e';
+  const phone = '01712345678';
+  AppConfig.findOne = () => ({
+    sort() {
+      return this;
+    },
+    lean: async () => ({ businessRules: {} }),
+  });
+  DonorProfile.findOne = () => ({
+    populate() {
+      return this;
+    },
+    lean: async () => ({
+      userId,
+      bloodGroup: 'A+',
+      isAvailable: false,
+      lastDonationDate: null,
+      healthDeclaration: {},
+      location: { coordinates: [90, 23] },
+      districtId: { nameBn: 'ঢাকা', nameEn: 'Dhaka' },
+      upazilaId: null,
+    }),
+    select() {
+      return this;
+    },
+  });
+  DonorProfile.aggregate = async () => [{
+    userId,
+    user: { name: 'Donor', avatar: null, phone },
+    bloodGroup: 'A+',
+    isAvailable: true,
+    createdAt: new Date(),
+  }];
+  User.findById = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({
+      name: 'Donor',
+      avatar: null,
+      phone,
+      privacy: { showPhone: 'never' },
+      status: 'active',
+      emailVerifiedAt: new Date(),
+      modes: { donor: true },
+    }),
+  });
+  User.findOne = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({ phone, status: 'active', emailVerifiedAt: new Date() }),
+  });
+  BloodRequest.findById = () => ({
+    populate() {
+      return this;
+    },
+    lean: async () => ({
+      requesterId: { _id: userId },
+      attendantPhone: phone,
+      isHidden: false,
+    }),
+  });
+  RequestResponse.countDocuments = async () => 0;
+  RequestResponse.findOne = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => null,
+  });
+  invalidateConfigCache();
+
+  try {
+    const donors = await searchDonors({ page: 1, limit: 20 }, viewerId);
+    assert.equal(donors.items[0].phone, phone);
+    const donor = await getDonor(userId, viewerId, {});
+    assert.equal(donor.donor.phone, phone);
+    assert.equal(await revealPhone(viewerId, userId).then((result) => result.phone), phone);
+    const request = await getRequest('request-id', userId);
+    assert.equal(request.request.attendantPhone, phone);
+  } finally {
+    AppConfig.findOne = originals.configFindOne;
+    DonorProfile.findOne = originals.profileFindOne;
+    DonorProfile.aggregate = originals.profileAggregate;
+    User.findById = originals.userFindById;
+    User.findOne = originals.userFindOne;
+    BloodRequest.findById = originals.requestFindById;
+    RequestResponse.countDocuments = originals.responseCount;
+    RequestResponse.findOne = originals.responseFindOne;
+    invalidateConfigCache();
+  }
+});
+
+test('protected request feed rejects anonymous and unverified users', async () => {
+  const originalFindById = User.findById;
+  User.findById = () => ({
+    select() {
+      return this;
+    },
+    lean: async () => ({ status: 'active', emailVerifiedAt: null }),
+  });
+  const app = express();
+  app.use('/v1/requests', requestRoutes);
+  app.use(errorMiddleware);
+  const server = app.listen(0);
+  await once(server, 'listening');
+
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/v1/requests`;
+    const anonymous = await fetch(url);
+    assert.equal(anonymous.status, 401);
+
+    const token = signAccessToken({ sub: '6af4b2c56bce675945a7eb7e', scope: 'user' });
+    const unverified = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(unverified.status, 401);
+    assert.equal((await unverified.json()).error.code, 'ACCOUNT_NOT_ACTIVE');
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    User.findById = originalFindById;
+  }
+});
+
+test('phone-bearing donor reads are limited to 60 requests per 15 minutes', async () => {
+  const app = express();
+  app.get('/', donorDirectoryLimiter, (_req, res) => res.json({ success: true }));
+  const server = app.listen(0);
+  await once(server, 'listening');
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    for (let index = 0; index < 60; index += 1) {
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+    }
+    const limited = await fetch(url);
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json()).error.code, 'RATE_LIMITED');
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('phone-bearing request reads are limited to 60 requests per 15 minutes', async () => {
+  const app = express();
+  app.get('/', requestFeedLimiter, (_req, res) => res.json({ success: true }));
+  const server = app.listen(0);
+  await once(server, 'listening');
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    for (let index = 0; index < 60; index += 1) {
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+    }
+    const limited = await fetch(url);
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json()).error.code, 'RATE_LIMITED');
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
 });
 

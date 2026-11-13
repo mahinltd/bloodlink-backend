@@ -13,6 +13,7 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // ══════════════════════ CONFIG (Draft → Publish → Rollback) ══════════════════════
 
 const EDITABLE_SECTIONS = [
+  'termsVersion',
   'designTokens',
   'featureFlags',
   'businessRules',
@@ -74,8 +75,8 @@ export async function updateDraft(data, adminId, req) {
 
   for (const key of EDITABLE_SECTIONS) {
     if (data[key] === undefined) continue;
-    if (Array.isArray(data[key])) {
-      draft.set(key, data[key]); // array সেকশন পুরোটা replace
+    if (key === 'termsVersion' || Array.isArray(data[key])) {
+      draft.set(key, data[key]);
     } else {
       const current = draft.get(key);
       const currentPlain = current?.toObject?.() || current || {};

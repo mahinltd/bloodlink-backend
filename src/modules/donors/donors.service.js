@@ -2,8 +2,6 @@ import mongoose from 'mongoose';
 import ApiError from '../../utils/ApiError.js';
 import { DonorProfile } from '../users/donorProfile.model.js';
 import { User } from '../users/user.model.js';
-import { RequestResponse } from '../requests/requestResponse.model.js';
-import { PhoneRevealLog } from './phoneRevealLog.model.js';
 import { getBusinessRules } from '../config/config.service.js';
 
 const DAY = 86400000;
@@ -91,6 +89,7 @@ export const searchDonors = async (query, viewerId) => {
     id: d.userId,
     name: d.user.name,
     avatar: d.user.avatar,
+    phone: d.user.phone,
     bloodGroup: d.bloodGroup,
     gender: d.gender,
     donationCount: d.donationCount,
@@ -116,7 +115,7 @@ export const getDonor = async (donorUserId, viewerId, query) => {
   if (!d) throw ApiError.notFound('Donor not found', 'DONOR_NOT_FOUND');
 
   const user = await User.findById(donorUserId)
-    .select('name avatar phone privacy status emailVerifiedAt modes')
+    .select('name avatar phone status emailVerifiedAt modes')
     .lean();
   if (!user || user.status !== 'active' || !user.emailVerifiedAt || !user.modes?.donor) {
     throw ApiError.notFound('Donor not found', 'DONOR_NOT_FOUND');
@@ -148,53 +147,22 @@ export const getDonor = async (donorUserId, viewerId, query) => {
         district: d.districtId ? { bn: d.districtId.nameBn, en: d.districtId.nameEn } : null,
         upazila: d.upazilaId ? { bn: d.upazilaId.nameBn, en: d.upazilaId.nameEn } : null,
       },
-      // প্রাইভেসি: 'always' হলেই সরাসরি; 'on_response' হলে reveal-phone এন্ডপয়েন্ট
-      phone: user.privacy?.showPhone === 'always' && d.isAvailable && isEligible ? user.phone : null,
+      phone: user.phone,
     },
   };
 };
 
-/* ফোন নাম্বার দেখা — সীমা + প্রাইভেসি + লগ (রোডম্যাপ পর্ব ২/৮) */
-export const revealPhone = async (viewerId, donorUserId) => {
-  const rules = await getBusinessRules();
-  const limit = rules.phoneRevealDailyLimit ?? 20;
-
-  if (viewerId === donorUserId) {
-    throw ApiError.badRequest('You cannot reveal your own number', 'CANNOT_REVEAL_OWN');
-  }
-
-  const donorUser = await User.findById(donorUserId).select('phone privacy status');
-  if (!donorUser || donorUser.status !== 'active') {
+/* Deprecated compatibility endpoint; verified viewers can now see phones directly. */
+export const revealPhone = async (_viewerId, donorUserId) => {
+  const donorUser = await User.findOne({
+    _id: donorUserId,
+    status: 'active',
+    emailVerifiedAt: { $ne: null },
+  })
+    .select('phone')
+    .lean();
+  if (!donorUser) {
     throw ApiError.notFound('User not found', 'USER_NOT_FOUND');
   }
-  if (donorUser.privacy?.showPhone === 'never') {
-    throw ApiError.forbidden('This user keeps their phone number hidden', 'PHONE_HIDDEN');
-  }
-
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const todayCount = await PhoneRevealLog.countDocuments({ viewerId, createdAt: { $gte: startOfDay } });
-  if (todayCount >= limit) {
-    throw ApiError.tooMany(`You can view at most ${limit} phone numbers per day`, 'PHONE_REVEAL_LIMIT');
-  }
-
-  // 'on_response' হলে ডোনারের accept/donate করা সাড়া লাগবে (ভিউয়ারের রিকোয়েস্টে)
-  if (donorUser.privacy?.showPhone === 'on_response') {
-    const accepted = await RequestResponse.aggregate([
-      { $match: { donorId: oid(donorUserId), status: { $in: ['accepted', 'donated'] } } },
-      { $lookup: { from: 'bloodrequests', localField: 'requestId', foreignField: '_id', as: 'request' } },
-      { $unwind: '$request' },
-      { $match: { 'request.requesterId': oid(viewerId) } },
-      { $limit: 1 },
-    ]);
-    if (!accepted.length) {
-      throw ApiError.forbidden(
-        'Number will be visible after the donor accepts your request',
-        'PHONE_REQUIRES_ACCEPTANCE'
-      );
-    }
-  }
-
-  await PhoneRevealLog.create({ viewerId, donorId: donorUserId });
   return { phone: donorUser.phone };
 };

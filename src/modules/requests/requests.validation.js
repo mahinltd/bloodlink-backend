@@ -23,7 +23,7 @@ export const createRequestSchema = z.object({
     component: z.enum(BLOOD_COMPONENTS).default('whole_blood'),
     bagsNeeded: z.coerce.number().int().min(1).max(10),
     neededBy: z.coerce.date(),
-    urgency: z.enum(['urgent', 'normal']).default('normal'),
+    urgency: z.enum(['normal', 'urgent', 'sos']).optional(),
     hospitalId: objectId.nullish(),
     hospitalName: z.string().trim().min(2).max(160),
     coordinates: z.object({
@@ -54,7 +54,7 @@ export const updateRequestSchema = z.object({
 
 export const listRequestsSchema = z.object({
   query: z.object({
-    urgency: z.enum(['urgent', 'normal']).optional(),
+    urgency: z.enum(['normal', 'urgent', 'sos']).optional(),
     bloodGroup: z.enum(BLOOD_GROUPS).optional(),
     lat: z.coerce.number().min(-90).max(90).optional(),
     lng: z.coerce.number().min(-180).max(180).optional(),

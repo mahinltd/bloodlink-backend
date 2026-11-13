@@ -14,7 +14,7 @@ import {
 import { sendOtpEmail } from '../notifications/email.service.js';
 import { User } from '../users/user.model.js';
 import { DonorProfile } from '../users/donorProfile.model.js';
-import { getBusinessRules } from '../config/config.service.js';
+import { getBusinessRules, getTermsVersion } from '../config/config.service.js';
 import { resolveVillageName, touchVillageUsage } from '../locations/locations.service.js';
 import { OtpCode } from './otpCode.model.js';
 import { OtpSendLimit } from './otpSendLimit.model.js';
@@ -258,6 +258,15 @@ export const register = async (payload, req) => {
     throw ApiError.conflict('Email already registered', 'EMAIL_ALREADY_EXISTS');
   }
 
+  if (payload.role === 'donor' && payload.consents?.phonePublicInApp !== true) {
+    throw ApiError.badRequest('Phone visibility consent is required for donor registration', 'PHONE_CONSENT_REQUIRED');
+  }
+
+  const termsVersion = await getTermsVersion();
+  if (payload.termsVersion && payload.termsVersion !== termsVersion) {
+    throw ApiError.conflict('Terms have been updated; please accept the current version', 'TERMS_VERSION_MISMATCH');
+  }
+
   // ডোনার যোগ্যতা যাচাই (পরে admin config থেকে আসবে)
   let donorRules = null;
   if (payload.role === 'donor') {
@@ -283,7 +292,15 @@ export const register = async (payload, req) => {
     passwordHash,
     language: payload.language,
     modes: { donor: payload.role === 'donor', requester: true },
-    consents: { termsAcceptedAt: new Date(), contactAllowed: true, noBloodSelling: true },
+    acceptedTermsVersion: termsVersion,
+    consents: {
+      termsAcceptedAt: new Date(),
+      phonePublicInApp: payload.role === 'donor',
+      phonePublicInAppAcceptedAt: payload.role === 'donor' ? new Date() : null,
+      phonePublicInAppTermsVersion: payload.role === 'donor' ? termsVersion : null,
+      contactAllowed: true,
+      noBloodSelling: true,
+    },
     status: 'unverified',
   };
 

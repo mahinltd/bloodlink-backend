@@ -1,5 +1,6 @@
 import ApiError from '../../utils/ApiError.js';
 import { AppConfig } from '../config/appConfig.model.js';
+import { DEFAULT_LEGAL_TEXTS } from '../config/config.service.js';
 import { logAudit } from './admin.service.js';
 
 // ══════════════════════ CMS (Legal texts, Onboarding, Contact) ══════════════════════
@@ -13,7 +14,23 @@ export async function getCmsContent() {
   const sections = {};
   for (const key of CMS_SECTIONS) {
     if (key === 'legalTexts' && !Object.keys(config.legalTexts || {}).length) {
-      sections[key] = config.legal || null;
+      sections[key] = {
+        ...DEFAULT_LEGAL_TEXTS,
+        ...(config.legal || {}),
+        phoneContact: {
+          ...DEFAULT_LEGAL_TEXTS.phoneContact,
+          ...(config.legal?.phoneContact || {}),
+        },
+      };
+    } else if (key === 'legalTexts') {
+      sections[key] = {
+        ...DEFAULT_LEGAL_TEXTS,
+        ...config.legalTexts,
+        phoneContact: {
+          ...DEFAULT_LEGAL_TEXTS.phoneContact,
+          ...(config.legalTexts?.phoneContact || {}),
+        },
+      };
     } else {
       sections[key] = config[key] || null;
     }

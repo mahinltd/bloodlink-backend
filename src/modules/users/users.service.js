@@ -7,7 +7,7 @@ import { IdVerification } from './idVerification.model.js';
 import { Device } from '../notifications/device.model.js';
 import { Donation } from '../requests/donation.model.js';
 import { RefreshToken } from '../auth/refreshToken.model.js';
-import { getBusinessRules } from '../config/config.service.js';
+import { getBusinessRules, getTermsVersion } from '../config/config.service.js';
 import { resolveVillageName, touchVillageUsage } from '../locations/locations.service.js';
 
 const DAY_MS = 86400000;
@@ -88,11 +88,27 @@ const applyDonorFields = (profile, donor, villageId) => {
 export const getMe = async (userId) => {
   const user = await assertActiveUser(userId);
   const donorProfile = await DonorProfile.findOne({ userId }).lean();
+  const termsVersion = await getTermsVersion();
   return {
     user: user.toJSON(),
     donorProfile,
     eligibility: donorProfile ? await calcEligibility(donorProfile) : null,
+    termsVersion,
+    needsTermsAcceptance: user.acceptedTermsVersion !== termsVersion,
   };
+};
+
+export const acceptTerms = async (userId, submittedVersion) => {
+  const user = await assertActiveUser(userId);
+  const termsVersion = await getTermsVersion();
+  if (submittedVersion !== termsVersion) {
+    throw ApiError.conflict('Terms have been updated; please accept the current version', 'TERMS_VERSION_MISMATCH');
+  }
+
+  user.acceptedTermsVersion = termsVersion;
+  user.consents.termsAcceptedAt = new Date();
+  await user.save();
+  return { accepted: true, acceptedTermsVersion: user.acceptedTermsVersion };
 };
 
 export const updateMe = async (userId, payload) => {
@@ -124,8 +140,12 @@ export const updateAvatar = async (userId, avatar) => {
   return { avatar: user.avatar };
 };
 
-export const enableDonorMode = async (userId, donor) => {
+export const enableDonorMode = async (userId, payload) => {
   const user = await assertActiveUser(userId);
+  const { consents, ...donor } = payload;
+  if (consents?.phonePublicInApp !== true) {
+    throw ApiError.badRequest('Phone visibility consent is required for donor mode', 'PHONE_CONSENT_REQUIRED');
+  }
   await assertDonorEligible(donor);
   const villageId = await resolveVillage(userId, donor);
   const profile = await DonorProfile.findOne({ userId }) || new DonorProfile({ userId });
@@ -134,6 +154,10 @@ export const enableDonorMode = async (userId, donor) => {
   profile.isAvailable = eligibility.isEligible && isHealthEligible(profile.healthDeclaration);
   await profile.save();
   user.modes.donor = true;
+  const termsVersion = await getTermsVersion();
+  user.consents.phonePublicInApp = true;
+  user.consents.phonePublicInAppAcceptedAt = new Date();
+  user.consents.phonePublicInAppTermsVersion = termsVersion;
   await user.save();
   return { user: user.toJSON(), donorProfile: profile };
 };

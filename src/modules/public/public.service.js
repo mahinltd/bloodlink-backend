@@ -1,4 +1,5 @@
 import { AppConfig } from '../config/appConfig.model.js';
+import { DEFAULT_LEGAL_TEXTS, DEFAULT_TERMS_VERSION } from '../config/config.service.js';
 import { DonorProfile } from '../users/donorProfile.model.js';
 import { Donation } from '../requests/donation.model.js';
 import { BloodRequest } from '../requests/bloodRequest.model.js';
@@ -39,12 +40,18 @@ export async function getSiteContent(lang = 'bn') {
     releasesService.getLatestReleaseForSite(lang),
     getPublicStats(),
   ]);
-  const legalTexts = config?.legalTexts && Object.keys(config.legalTexts).length
+  const storedLegalTexts = config?.legalTexts && Object.keys(config.legalTexts).length
     ? config.legalTexts
     : config?.legal || {};
+  const legalTexts = {
+    ...DEFAULT_LEGAL_TEXTS,
+    ...storedLegalTexts,
+    phoneContact: { ...DEFAULT_LEGAL_TEXTS.phoneContact, ...(storedLegalTexts.phoneContact || {}) },
+  };
 
   return {
     appName: 'BloodLink',
+    termsVersion: config?.termsVersion || DEFAULT_TERMS_VERSION,
     tagline:
       lang === 'en' ? 'Find blood donors near you, fast.' : 'আপনার কাছাকাছি রক্তদাতা খুঁজুন, দ্রুত।',
     contact: config?.contact || {},

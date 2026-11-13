@@ -15,6 +15,7 @@ const consents = z.object({
   termsAccepted: z.literal(true),
   contactAllowed: z.literal(true),
   noBloodSelling: z.literal(true),
+  phonePublicInApp: z.boolean().optional(),
 });
 
 export const registerSchema = z.object({
@@ -27,11 +28,19 @@ export const registerSchema = z.object({
       password,
       language: z.enum(['bn', 'en']).default('bn'),
       consents,
+      termsVersion: z.string().trim().min(1).max(40).optional(),
       donor: donorFormSchema.nullish(),
     })
     .superRefine((data, ctx) => {
       if (data.role === 'donor' && !data.donor) {
         ctx.addIssue({ code: 'custom', path: ['donor'], message: 'Donor details are required for donor registration' });
+      }
+      if (data.role === 'donor' && data.consents.phonePublicInApp !== true) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['consents', 'phonePublicInApp'],
+          message: 'Phone visibility consent is required for donor registration',
+        });
       }
     }),
 });
