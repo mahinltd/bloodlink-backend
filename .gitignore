@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+
+# Excluded from this repository
+docs/
+tests/
+
+# Runtime data and empty/runtime-only directories
+logs/
+uploads/
+temp/
+
+# Build output
+dist/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
