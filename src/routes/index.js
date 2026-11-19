@@ -2,6 +2,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const env = require('../config/env');
+const adminDirectoryRoutes = require('./adminDirectory.routes');
 
 const router = express.Router();
 
@@ -36,6 +37,7 @@ router.use('/reports', require('./report.routes'));             // Phase 6
 router.use('/donations', require('./donation.routes'));         // Phase 7
 router.use('/verification', require('./verification.routes')); // Phase 8
 router.use('/admin', require('./admin.routes'));               // Phase 8
+router.use('/admin', adminDirectoryRoutes);
 // router.use('/hospitals', require('./hospital.routes'));
 // router.use('/blood-banks', require('./bloodBank.routes'));
 // router.use('/reports', require('./report.routes'));
