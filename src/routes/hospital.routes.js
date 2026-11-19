@@ -1,8 +1,7 @@
-// BloodLink Backend - Route: /hospitals (public)
 const express = require('express');
-const controller = require('../controllers/hospital.controller');
-
 const router = express.Router();
-router.get('/', controller.listHospitals);
+const { listHospitals } = require('../controllers/publicDirectory.controller');
+
+router.get('/', listHospitals);
 
 module.exports = router;

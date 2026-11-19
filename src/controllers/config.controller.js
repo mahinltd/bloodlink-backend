@@ -1,43 +1,57 @@
-// BloodLink Backend - Controller: Public Config (App Remote Config + Website Stats)
-const asyncHandler = require('../utils/asyncHandler');
-const ApiResponse = require('../utils/ApiResponse');
+// BloodLink Backend - Public Config Controller
 const AppConfig = require('../models/AppConfig');
-const User = require('../models/User');
 const DonorProfile = require('../models/DonorProfile');
+const DonationHistory = require('../models/DonationHistory');
 const BloodRequest = require('../models/BloodRequest');
+const asyncHandler = require('../utils/asyncHandler');
 
-// @route GET /config (public — app launch-এ fetch হয়, §৩.১)
+// @desc   Public app config (safe fields only)
+// @route  GET /api/v1/config
 const getPublicConfig = asyncHandler(async (req, res) => {
-  const config = await AppConfig.getConfig();
+  let config = null;
+  try {
+    config = await AppConfig.getConfig();
+  } catch (e) {
+    /* DB ধুমড়ে গেলেও defaults দেবো */
+  }
 
-  // শুধু public-safe fields expose করা হয়
-  res.status(200).json(new ApiResponse(200, {
-    appName: config.appName,
-    logoUrl: config.logoUrl,
-    primaryColor: config.primaryColor,
-    secondaryColor: config.secondaryColor,
-    supportEmail: config.supportEmail,
-    maintenanceMode: config.maintenanceMode,
-    maintenanceMessage: config.maintenanceMessage,
-    featureFlags: config.featureFlags,
-    onboarding: config.onboarding,
-  }, 'App config fetched.'));
+  const c = config || {};
+  res.status(200).json({
+    success: true,
+    statusCode: 200,
+    message: 'App config fetched.',
+    data: {
+      appName: c.appName || 'BloodLink',
+      logoUrl: c.logoUrl || '',
+      primaryColor: c.primaryColor || '#C62828',
+      supportEmail: c.supportEmail || 'support@bloodlink.tech',
+      maintenanceMode: !!c.maintenanceMode,
+      featureFlags: c.featureFlags ? Object.fromEntries(c.featureFlags) : {},
+      onboarding: c.onboarding || [],
+    },
+  });
 });
 
-// @route GET /config/stats (public — Website Statistics Page, §৭)
+// @desc   Public live statistics
+// @route  GET /api/v1/config/stats
 const getPublicStats = asyncHandler(async (req, res) => {
-  const [totalUsers, totalDonors, bloodGroupDist, activeRequests, completedRequests] = await Promise.all([
-    User.countDocuments({ accountStatus: 'active' }),
-    User.countDocuments({ role: 'donor', accountStatus: 'active' }),
-    DonorProfile.aggregate([{ $group: { _id: '$bloodGroup', count: { $sum: 1 } } }, { $sort: { _id: 1 } }]),
-    BloodRequest.countDocuments({ status: { $in: ['pending', 'searching_donors', 'donor_responded'] } }),
+  const [donors, donations, requestsFulfilled] = await Promise.all([
+    DonorProfile.countDocuments({}),
+    DonationHistory.countDocuments({ status: 'confirmed' }),
     BloodRequest.countDocuments({ status: 'completed' }),
   ]);
 
-  res.status(200).json(new ApiResponse(200, {
-    totalUsers, totalDonors, activeRequests, completedRequests,
-    bloodGroupDistribution: bloodGroupDist,
-  }, 'Public statistics fetched.'));
+  res.status(200).json({
+    success: true,
+    statusCode: 200,
+    message: 'Public stats fetched.',
+    data: {
+      totalDonors: donors,
+      totalDonations: donations,
+      livesImpacted: donations * 3,
+      requestsFulfilled,
+    },
+  });
 });
 
 module.exports = { getPublicConfig, getPublicStats };

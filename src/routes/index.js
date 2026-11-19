@@ -42,4 +42,10 @@ router.use('/admin', require('./admin.routes'));               // Phase 8
 // router.use('/config', require('./config.routes'));
 // router.use('/app-version', require('./appVersion.routes'));
 
+// Public APIs
+router.use('/hospitals', require('./hospital.routes'));
+router.use('/blood-banks', require('./bloodBank.routes'));
+router.use('/config', require('./config.routes'));
+router.use('/app-version', require('./appVersion.routes'));
+
 module.exports = router;
