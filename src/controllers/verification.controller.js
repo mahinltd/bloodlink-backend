@@ -33,7 +33,7 @@ const submitVerification = asyncHandler(async (req, res) => {
     const verification = await VerificationRequest.create({
       user: req.user._id,
       nidImage: { publicId: nidResult.public_id, version: String(nidResult.version), format: nidResult.format },
-      selfieImage: { publicId: selfieResult.public_id, version: String(selfieResult.public_id), format: selfieResult.format },
+      selfieImage: { publicId: selfieResult.public_id, version: String(selfieResult.version), format: selfieResult.format },
       nidNumber: req.body.nidNumber || '',
       fullNameAsPerNid: req.body.fullNameAsPerNid || '',
       nidDateOfBirth: req.body.nidDateOfBirth || '',

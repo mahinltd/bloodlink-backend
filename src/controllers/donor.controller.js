@@ -151,6 +151,7 @@ const searchDonors = asyncHandler(async (req, res) => {
     {
       $match: {
         'user.accountStatus': 'active',
+        'user._id': { $ne: req.user._id },
         ...(verified === 'true' ? { 'user.isVerified': true } : {}),
       },
     }

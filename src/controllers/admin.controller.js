@@ -242,9 +242,13 @@ const getVerificationDetail = asyncHandler(async (req, res) => {
 
   // Pending থাকলে image এখনো storage-এ আছে → ১০ মিনিটের signed URL
   const images = {};
-  if (!verification.imagesPurgedAt && verification.nidImage?.publicId) {
-    images.nidUrl = storageService.generatePrivateImageUrl(verification.nidImage);
-    images.selfieUrl = storageService.generatePrivateImageUrl(verification.selfieImage);
+  if (!verification.imagesPurgedAt) {
+    if (verification.nidImage?.publicId) {
+      images.nidUrl = storageService.generatePrivateImageUrl(verification.nidImage);
+    }
+    if (verification.selfieImage?.publicId) {
+      images.selfieUrl = storageService.generatePrivateImageUrl(verification.selfieImage);
+    }
   }
 
   res.status(200).json(
@@ -693,17 +697,41 @@ const broadcastNotification = asyncHandler(async (req, res) => {
   const filter = { accountStatus: 'active' };
   if (audience === 'donors') filter.role = 'donor';
   if (audience === 'users') filter.role = 'user';
-  const userIds = await User.find(filter).select('_id').lean();
-  let sent = 0;
-  const BATCH = 100;
-  for (let i = 0; i < userIds.length; i += BATCH) {
-    const batch = userIds.slice(i, i + BATCH);
-    await Notification.insertMany(batch.map((u) => ({ user: u._id, type: 'system', title, body, data: { screen: 'notifications' } })));
-    await Promise.allSettled(batch.map((u) => fcmService.sendPushToUser(u._id, { title, body, data: { screen: 'notifications' } })));
-    sent += batch.length;
+  const users = await User.find(filter).select('_id fcmTokens').lean();
+  let recipientCount = 0;
+  let pushSent = 0;
+  const batchSize = 100;
+  const data = { screen: 'notifications' };
+
+  for (let i = 0; i < users.length; i += batchSize) {
+    const batch = users.slice(i, i + batchSize);
+    await Notification.insertMany(
+      batch.map((user) => ({
+        user: user._id,
+        type: 'system',
+        title,
+        body,
+        data,
+      }))
+    );
+    recipientCount += batch.length;
+
+    const tokens = batch.flatMap((user) => (user.fcmTokens || []).map(({ token }) => token));
+    const pushResult = await fcmService.sendToTokens(tokens, { title, body, data });
+    pushSent += pushResult.successCount;
   }
-  auditService.log(req.admin._id, 'notification.broadcast', { details: { title, audience, count: sent }, ip: req.ip });
-  res.status(200).json(new ApiResponse(200, { sent }, `Broadcast sent to ${sent} users.`));
+
+  auditService.log(req.admin._id, 'notification.broadcast', {
+    details: { title, audience, count: recipientCount, pushSent },
+    ip: req.ip,
+  });
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      { sent: recipientCount, pushSent },
+      `Broadcast sent to ${recipientCount} users.`
+    )
+  );
 });
 
 module.exports = {

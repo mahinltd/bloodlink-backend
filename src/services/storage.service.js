@@ -99,14 +99,17 @@ const uploadPrivateImage = (buffer, options = {}) => {
 
 // Admin review-এর জন্য সাময়িক signed URL (10 মিনিট মেয়াদ)
 const generatePrivateImageUrl = ({ publicId, version, format = 'jpg' }, expiresInSec = 600) => {
-  return cloudinary.url(publicId, {
+  const options = {
     type: 'authenticated',
-    version: Number(version),
     format,
     sign_url: true,
     secure: true,
     expires_at: Math.floor(Date.now() / 1000) + expiresInSec,
-  });
+  };
+  const numericVersion = Number(version);
+  if (Number.isFinite(numericVersion) && numericVersion > 0) options.version = numericVersion;
+  else options.force_version = false;
+  return cloudinary.url(publicId, options);
 };
 
 const deletePrivateImage = async (publicId) => {

@@ -53,4 +53,56 @@ const sendPushToUser = async (userId, { title, body, data = {} }) => {
   }
 };
 
-module.exports = { sendPushToUser };
+const sendToTokens = async (tokens, { title, body, data = {} }) => {
+  const uniqueTokens = [...new Set(tokens.filter(Boolean))];
+  if (uniqueTokens.length === 0) return { successCount: 0, failureCount: 0 };
+
+  if (!messaging) {
+    logger.warn(`[DEV MODE] FCM broadcast "${title}" | tokens: ${uniqueTokens.length}`);
+    return { successCount: 0, failureCount: 0, dev: true };
+  }
+
+  let successCount = 0;
+  let failureCount = 0;
+  const invalidTokens = [];
+  const batchSize = 100;
+
+  for (let i = 0; i < uniqueTokens.length; i += batchSize) {
+    const batch = uniqueTokens.slice(i, i + batchSize);
+    try {
+      const response = await messaging.sendEachForMulticast({
+        tokens: batch,
+        notification: { title, body },
+        data: stringifyData(data),
+        android: { priority: 'high' },
+      });
+
+      successCount += response.successCount;
+      failureCount += response.failureCount;
+      response.responses.forEach((result, index) => {
+        if (!result.success && result.error && INVALID_TOKEN_CODES.includes(result.error.code)) {
+          invalidTokens.push(batch[index]);
+        }
+      });
+    } catch (err) {
+      failureCount += batch.length;
+      logger.error(`FCM broadcast batch failed: ${err.message}`);
+    }
+  }
+
+  if (invalidTokens.length > 0) {
+    try {
+      await User.updateMany(
+        { 'fcmTokens.token': { $in: invalidTokens } },
+        { $pull: { fcmTokens: { token: { $in: invalidTokens } } } }
+      );
+      logger.info(`Removed ${invalidTokens.length} invalid FCM token(s) after broadcast.`);
+    } catch (err) {
+      logger.error(`Failed to remove invalid FCM tokens after broadcast: ${err.message}`);
+    }
+  }
+
+  return { successCount, failureCount };
+};
+
+module.exports = { sendPushToUser, sendToTokens };
