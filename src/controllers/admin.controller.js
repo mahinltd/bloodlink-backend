@@ -240,14 +240,28 @@ const getVerificationDetail = asyncHandler(async (req, res) => {
 
   if (!verification) throw new ApiError(404, 'Verification request not found.');
 
+  const donorProfile = verification.user
+    ? await DonorProfile.findOne({ user: verification.user._id })
+      .select('address.division address.district')
+      .lean()
+    : null;
+  if (verification.user) {
+    verification.user.division = donorProfile?.address?.division || '';
+    verification.user.district = donorProfile?.address?.district || '';
+  }
+  if (verification.nidDateOfBirth) {
+    const dateOnly = String(verification.nidDateOfBirth).match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dateOnly) verification.nidDateOfBirth = dateOnly[1];
+  }
+
   // Pending থাকলে image এখনো storage-এ আছে → ১০ মিনিটের signed URL
   const images = {};
   if (!verification.imagesPurgedAt) {
     if (verification.nidImage?.publicId) {
-      images.nidUrl = storageService.generatePrivateImageUrl(verification.nidImage);
+      images.nidUrl = await storageService.generatePrivateImageUrl(verification.nidImage);
     }
     if (verification.selfieImage?.publicId) {
-      images.selfieUrl = storageService.generatePrivateImageUrl(verification.selfieImage);
+      images.selfieUrl = await storageService.generatePrivateImageUrl(verification.selfieImage);
     }
   }
 

@@ -18,22 +18,33 @@ const submitVerification = asyncHandler(async (req, res) => {
 
   // 🔒 Private upload (authenticated delivery — public URL কাজ করবে না)
   const stamp = Date.now();
-  const [nidResult, selfieResult] = await Promise.all([
+  const uploadResults = await Promise.allSettled([
     storageService.uploadPrivateImage(files.nid[0].buffer, {
       folder: 'bloodlink/verification',
       publicId: `nid_${req.user._id}_${stamp}`,
+      contentType: files.nid[0].mimetype,
     }),
     storageService.uploadPrivateImage(files.selfie[0].buffer, {
       folder: 'bloodlink/verification',
       publicId: `selfie_${req.user._id}_${stamp}`,
+      contentType: files.selfie[0].mimetype,
     }),
   ]);
+  const failedUpload = uploadResults.find((result) => result.status === 'rejected');
+  if (failedUpload) {
+    const uploadedImages = uploadResults
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value.key);
+    await Promise.all(uploadedImages.map((key) => storageService.deletePrivateImage(key)));
+    throw failedUpload.reason;
+  }
+  const [nidResult, selfieResult] = uploadResults.map((result) => result.value);
 
   try {
     const verification = await VerificationRequest.create({
       user: req.user._id,
-      nidImage: { publicId: nidResult.public_id, version: String(nidResult.version), format: nidResult.format },
-      selfieImage: { publicId: selfieResult.public_id, version: String(selfieResult.version), format: selfieResult.format },
+      nidImage: { publicId: nidResult.key, format: nidResult.format },
+      selfieImage: { publicId: selfieResult.key, format: selfieResult.format },
       nidNumber: req.body.nidNumber || '',
       fullNameAsPerNid: req.body.fullNameAsPerNid || '',
       nidDateOfBirth: req.body.nidDateOfBirth || '',
@@ -46,8 +57,8 @@ const submitVerification = asyncHandler(async (req, res) => {
   } catch (err) {
     // Upload succeeded but DB failed → uploaded files পরিষ্কার
     await Promise.all([
-      storageService.deletePrivateImage(nidResult.public_id),
-      storageService.deletePrivateImage(selfieResult.public_id),
+      storageService.deletePrivateImage(nidResult.key),
+      storageService.deletePrivateImage(selfieResult.key),
     ]);
     throw err;
   }

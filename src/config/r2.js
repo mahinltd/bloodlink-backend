@@ -1,4 +1,4 @@
-// BloodLink Backend - Config: Cloudflare R2 (Voice Messages, APK Files)
+// BloodLink Backend - Config: Cloudflare R2 (Private Verification Images, Voice, APK Files)
 const { S3Client } = require('@aws-sdk/client-s3');
 const env = require('./env');
 const logger = require('../utils/logger');
@@ -19,7 +19,7 @@ if (isR2Configured) {
   });
   logger.success('Cloudflare R2 storage configured.');
 } else {
-  logger.warn('R2 credentials missing — voice message upload will return 503 until .env is filled.');
+  logger.warn('R2 credentials missing — voice and verification image uploads will return 503 until .env is filled.');
 }
 
 module.exports = { r2Client, isR2Configured };

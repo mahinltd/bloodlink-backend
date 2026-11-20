@@ -1,6 +1,11 @@
 // BloodLink Backend - Service: Storage (Cloudinary)
 const { randomUUID } = require('crypto');
-const { PutObjectCommand } = require('@aws-sdk/client-s3');
+const {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+} = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { cloudinary, isCloudinaryConfigured } = require('../config/cloudinary');
 const { r2Client, isR2Configured } = require('../config/r2');
 const env = require('../config/env');
@@ -73,52 +78,59 @@ const uploadVoice = async (buffer, mimetype) => {
 };
 
 // ---------- Private Storage (NID / Selfie) — §৫ ----------
-// Cloudinary 'authenticated' type → public URL কাজ করে না
-const uploadPrivateImage = (buffer, options = {}) => {
-  if (!isCloudinaryConfigured) {
-    throw new ApiError(503, 'Image storage is not configured. Add Cloudinary credentials to .env');
+const PRIVATE_IMAGE_FORMATS = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+
+const uploadPrivateImage = async (buffer, options = {}) => {
+  if (!isR2Configured) {
+    throw new ApiError(503, 'Private image storage is not configured. Add R2 credentials to .env');
   }
 
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: options.folder || 'bloodlink/verification',
-        public_id: options.publicId,
-        type: 'authenticated', // 🔒 private delivery
-        overwrite: true,
-        resource_type: 'image',
-      },
-      (error, result) => {
-        if (error) return reject(new ApiError(502, `Private image upload failed: ${error.message}`));
-        resolve(result);
-      }
-    );
-    stream.end(buffer);
-  });
+  const format = PRIVATE_IMAGE_FORMATS[options.contentType];
+  if (!format) throw new ApiError(400, 'Unsupported private image type.');
+
+  const folder = (options.folder || 'bloodlink/verification').replace(/^\/+|\/+$/g, '');
+  const objectName = options.publicId || randomUUID();
+  const key = `${folder}/${objectName}`;
+
+  await r2Client.send(new PutObjectCommand({
+    Bucket: env.r2.bucketName,
+    Key: key,
+    Body: buffer,
+    ContentType: options.contentType,
+    CacheControl: 'private, no-store',
+  }));
+
+  return { key, format };
 };
 
 // Admin review-এর জন্য সাময়িক signed URL (10 মিনিট মেয়াদ)
-const generatePrivateImageUrl = ({ publicId, version, format = 'jpg' }, expiresInSec = 600) => {
-  const options = {
-    type: 'authenticated',
-    format,
-    sign_url: true,
-    secure: true,
-    expires_at: Math.floor(Date.now() / 1000) + expiresInSec,
-  };
-  const numericVersion = Number(version);
-  if (Number.isFinite(numericVersion) && numericVersion > 0) options.version = numericVersion;
-  else options.force_version = false;
-  return cloudinary.url(publicId, options);
+const generatePrivateImageUrl = async ({ publicId }, expiresInSec = 600) => {
+  if (!isR2Configured) {
+    throw new ApiError(503, 'Private image storage is not configured. Add R2 credentials to .env');
+  }
+  if (!publicId) throw new ApiError(500, 'Private image object key is missing.');
+
+  return getSignedUrl(
+    r2Client,
+    new GetObjectCommand({ Bucket: env.r2.bucketName, Key: publicId }),
+    { expiresIn: expiresInSec }
+  );
 };
 
 const deletePrivateImage = async (publicId) => {
-  if (!isCloudinaryConfigured || !publicId) return;
-  try {
-    await cloudinary.uploader.destroy(publicId, { type: 'authenticated', invalidate: true });
-  } catch {
-    // best-effort
+  if (!publicId) return;
+  if (!isR2Configured) {
+    throw new ApiError(503, 'Private image storage is not configured. Add R2 credentials to .env');
   }
+
+  await r2Client.send(new DeleteObjectCommand({
+    Bucket: env.r2.bucketName,
+    Key: publicId,
+  }));
 };
 
 module.exports = { uploadImage, deleteImage, uploadVoice, uploadPrivateImage, generatePrivateImageUrl, deletePrivateImage };

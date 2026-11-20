@@ -100,7 +100,7 @@ The server listens on port `5000` by default. Change it with `PORT`. The API pre
 | `R2_ACCESS_KEY_ID` | No | Cloudflare R2 access key |
 | `R2_SECRET_ACCESS_KEY` | No | Cloudflare R2 secret key |
 | `R2_BUCKET_NAME` | No | R2 bucket name |
-| `R2_ENDPOINT` | No | S3-compatible R2 endpoint |
+| `R2_ENDPOINT` | No | S3-compatible R2 endpoint; used for private verification-image uploads and signed URLs |
 | `R2_PUBLIC_URL` | No | Public base URL for stored objects |
 | `OTP_EXPIRES_IN_MINUTES` | No | Email OTP lifetime; defaults to `10` |
 | `DEFAULT_SEARCH_RADIUS_KM` | No | Initial donor-search radius; defaults to `10` km |

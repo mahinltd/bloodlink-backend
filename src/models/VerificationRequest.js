@@ -5,7 +5,7 @@ const verificationRequestSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
-    // Private Cloudinary storage (authenticated delivery only)
+    // Private R2 object key (stored in the legacy publicId field)
     nidImage: { publicId: String, version: String, format: String },
     selfieImage: { publicId: String, version: String, format: String },
 
