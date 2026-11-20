@@ -10,6 +10,28 @@ const { cloudinary, isCloudinaryConfigured } = require('../config/cloudinary');
 const { r2Client, isR2Configured } = require('../config/r2');
 const env = require('../config/env');
 const ApiError = require('../utils/ApiError');
+const logger = require('../utils/logger');
+
+const sendPrivateR2Command = async (command, action) => {
+  try {
+    return await r2Client.send(command);
+  } catch (err) {
+    const statusCode = err.$metadata?.httpStatusCode;
+    const denied = err.name === 'AccessDenied' || err.Code === 'AccessDenied' || statusCode === 403;
+    logger.error(
+      `R2 private image ${action} failed: ${err.name || 'Error'} (${statusCode || 'no status'}) ${err.message}`
+    );
+
+    if (denied) {
+      throw new ApiError(
+        503,
+        `Cloudflare R2 denied private image ${action}. Check that the R2 S3 API token has Object Read & Write access to the configured bucket and that R2_ENDPOINT belongs to the same account.`
+      );
+    }
+
+    throw new ApiError(502, `Cloudflare R2 private image ${action} failed.`);
+  }
+};
 
 const uploadImage = (buffer, options = {}) => {
   if (!isCloudinaryConfigured) {
@@ -96,13 +118,13 @@ const uploadPrivateImage = async (buffer, options = {}) => {
   const objectName = options.publicId || randomUUID();
   const key = `${folder}/${objectName}`;
 
-  await r2Client.send(new PutObjectCommand({
+  await sendPrivateR2Command(new PutObjectCommand({
     Bucket: env.r2.bucketName,
     Key: key,
     Body: buffer,
     ContentType: options.contentType,
     CacheControl: 'private, no-store',
-  }));
+  }), 'upload');
 
   return { key, format };
 };
@@ -127,10 +149,10 @@ const deletePrivateImage = async (publicId) => {
     throw new ApiError(503, 'Private image storage is not configured. Add R2 credentials to .env');
   }
 
-  await r2Client.send(new DeleteObjectCommand({
+  await sendPrivateR2Command(new DeleteObjectCommand({
     Bucket: env.r2.bucketName,
     Key: publicId,
-  }));
+  }), 'delete');
 };
 
 module.exports = { uploadImage, deleteImage, uploadVoice, uploadPrivateImage, generatePrivateImageUrl, deletePrivateImage };

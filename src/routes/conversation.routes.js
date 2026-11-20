@@ -6,9 +6,17 @@ const messageController = require('../controllers/message.controller');
 const validate = require('../middlewares/validate.middleware');
 const { protect } = require('../middlewares/auth.middleware');
 const Message = require('../models/Message');
+const ApiError = require('../utils/ApiError');
 
 const router = express.Router();
 router.use(protect);
+
+router.use((req, res, next) => {
+  if (/^\/\/messages\/?$/.test(req.path)) {
+    return next(new ApiError(400, 'Conversation ID is required.'));
+  }
+  next();
+});
 
 router.get('/', convoController.listMyConversations);
 
@@ -23,12 +31,21 @@ router.post(
   convoController.createOrGetConversation
 );
 
-router.get('/:id', param('id').isMongoId().withMessage('Invalid conversation ID.'), validate, convoController.getConversationById);
+router.get(
+  '/:conversationId',
+  [
+    param('conversationId').notEmpty().withMessage('Conversation ID is required.').bail()
+      .isMongoId().withMessage('Invalid conversation ID.'),
+  ],
+  validate,
+  convoController.getConversationById
+);
 
 router.get(
-  '/:id/messages',
+  '/:conversationId/messages',
   [
-    param('id').isMongoId().withMessage('Invalid conversation ID.'),
+    param('conversationId').notEmpty().withMessage('Conversation ID is required.').bail()
+      .isMongoId().withMessage('Invalid conversation ID.'),
     query('before').optional().isISO8601().withMessage('Invalid cursor date.'),
   ],
   validate,
@@ -36,9 +53,10 @@ router.get(
 );
 
 router.post(
-  '/:id/messages',
+  '/:conversationId/messages',
   [
-    param('id').isMongoId().withMessage('Invalid conversation ID.'),
+    param('conversationId').notEmpty().withMessage('Conversation ID is required.').bail()
+      .isMongoId().withMessage('Invalid conversation ID.'),
     body('type').isIn(Message.MESSAGE_TYPES).withMessage(`Type must be one of: ${Message.MESSAGE_TYPES.join(', ')}`),
     body('text').optional().trim().isLength({ max: 2000 }).withMessage('Message too long (max 2000 characters).'),
     body('mediaUrl').optional().isURL().withMessage('mediaUrl must be a valid URL.'),

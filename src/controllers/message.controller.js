@@ -2,6 +2,7 @@
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
+const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
@@ -12,6 +13,9 @@ const storageService = require('../services/storage.service');
 const { buildPagination } = require('../utils/helpers');
 
 const getParticipantConvo = async (conversationId, userId) => {
+  if (!conversationId) throw new ApiError(400, 'Conversation ID is required.');
+  if (!mongoose.isValidObjectId(conversationId)) throw new ApiError(400, 'Invalid conversation ID.');
+
   const convo = await Conversation.findById(conversationId);
   if (!convo) throw new ApiError(404, 'Conversation not found.');
   if (!convo.participants.some((p) => String(p) === String(userId))) {
@@ -22,12 +26,13 @@ const getParticipantConvo = async (conversationId, userId) => {
 
 // @route GET /conversations/:id/messages
 const getMessages = asyncHandler(async (req, res) => {
-  await getParticipantConvo(req.params.id, req.user._id);
+  const { conversationId } = req.params;
+  await getParticipantConvo(conversationId, req.user._id);
   const { page, limit } = buildPagination(req.query, { limit: 30, maxLimit: 50 });
 
   // Cursor pagination: ?before=<messageCreatedAt ISO>
   const filter = {
-    conversation: req.params.id,
+    conversation: conversationId,
     deletedFor: { $ne: req.user._id },
   };
   if (req.query.before) filter.createdAt = { $lt: new Date(req.query.before) };
@@ -54,7 +59,7 @@ const getMessages = asyncHandler(async (req, res) => {
 // @route POST /conversations/:id/messages
 const sendMessage = asyncHandler(async (req, res) => {
   const { type, text, mediaUrl, durationSec, latitude, longitude } = req.body;
-  const convo = await getParticipantConvo(req.params.id, req.user._id);
+  const convo = await getParticipantConvo(req.params.conversationId, req.user._id);
 
   const otherId = convo.participants.find((p) => String(p) !== String(req.user._id));
 

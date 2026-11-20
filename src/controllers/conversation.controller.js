@@ -2,6 +2,7 @@
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
+const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Block = require('../models/Block');
 const User = require('../models/User');
@@ -87,7 +88,11 @@ const createOrGetConversation = asyncHandler(async (req, res) => {
 
 // @route GET /conversations/:id
 const getConversationById = asyncHandler(async (req, res) => {
-  const conversation = await Conversation.findById(req.params.id)
+  const { conversationId } = req.params;
+  if (!conversationId) throw new ApiError(400, 'Conversation ID is required.');
+  if (!mongoose.isValidObjectId(conversationId)) throw new ApiError(400, 'Invalid conversation ID.');
+
+  const conversation = await Conversation.findById(conversationId)
     .populate('participants', 'fullName avatar isVerified accountStatus')
     .populate('requestRef', 'requestId bloodGroup urgency status hospitalName')
     .lean();
