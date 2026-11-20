@@ -182,8 +182,7 @@ router.put(
 );
 
 // ---------- Broadcast (super_admin, support_admin) ----------
-router.post(
-  '/notifications/broadcast',
+const broadcastRules = [
   supportRoles,
   [
     body('title').trim().notEmpty().withMessage('Title is required.').isLength({ max: 150 }),
@@ -191,8 +190,11 @@ router.post(
     body('audience').isIn(['all', 'donors', 'users']).withMessage('Audience must be all, donors or users.'),
   ],
   validate,
-  controller.broadcastNotification
-);
+  controller.broadcastNotification,
+];
+
+router.post('/broadcast', ...broadcastRules);
+router.post('/notifications/broadcast', ...broadcastRules);
 
 // ---------- Monitoring & Audit (super_admin, monitoring_admin) ----------
 const monitorRoles = requireAdminRoles('monitoring_admin');
