@@ -657,6 +657,11 @@ const updateAppConfig = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, { config }, 'App config updated.'));
 });
 
+const getAppVersionAdmin = asyncHandler(async (req, res) => {
+  const config = await AppConfig.getConfig();
+  res.status(200).json(new ApiResponse(200, { appVersion: config.appVersion }, 'App version fetched.'));
+});
+
 const updateAppVersion = asyncHandler(async (req, res) => {
   const config = await AppConfig.getConfig();
   const allowed = ['latestVersion', 'latestVersionCode', 'minimumSupportedVersionCode', 'apkUrl', 'forceUpdate', 'releaseNotes', 'fileSizeMB', 'sha256'];
@@ -781,6 +786,7 @@ module.exports = {
   deleteBloodBank,
   getAppConfigAdmin,
   updateAppConfig,
+  getAppVersionAdmin,
   updateAppVersion,
   getSystemHealth,
   listAuditLogs,

@@ -10,7 +10,37 @@ const INVALID_TOKEN_CODES = [
 
 // FCM data payload-এ সব value string হতে হয়
 const stringifyData = (data = {}) =>
-  Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]));
+  Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? '')]));
+
+const ANDROID_NOTIFICATION_CHANNEL_ID = 'bloodlink_high_importance';
+
+const buildPushMessage = ({ title, body, data = {} }) => ({
+  notification: { title, body },
+  data: stringifyData(data),
+  android: {
+    priority: 'high',
+    ttl: 24 * 60 * 60 * 1000,
+    notification: {
+      channelId: ANDROID_NOTIFICATION_CHANNEL_ID,
+      priority: 'high',
+      sound: 'default',
+      defaultSound: true,
+      defaultVibrateTimings: true,
+    },
+  },
+  apns: {
+    headers: {
+      'apns-priority': '10',
+    },
+    payload: {
+      aps: {
+        alert: { title, body },
+        sound: 'default',
+        contentAvailable: true,
+      },
+    },
+  },
+});
 
 const sendPushToUser = async (userId, { title, body, data = {} }) => {
   const user = await User.findById(userId).select('fcmTokens');
@@ -26,9 +56,7 @@ const sendPushToUser = async (userId, { title, body, data = {} }) => {
   try {
     const response = await messaging.sendEachForMulticast({
       tokens,
-      notification: { title, body },
-      data: stringifyData(data),
-      android: { priority: 'high' },
+      ...buildPushMessage({ title, body, data }),
     });
 
     // Invalid token পরিষ্কার
@@ -72,9 +100,7 @@ const sendToTokens = async (tokens, { title, body, data = {} }) => {
     try {
       const response = await messaging.sendEachForMulticast({
         tokens: batch,
-        notification: { title, body },
-        data: stringifyData(data),
-        android: { priority: 'high' },
+        ...buildPushMessage({ title, body, data }),
       });
 
       successCount += response.successCount;

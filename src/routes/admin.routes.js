@@ -164,6 +164,7 @@ router.delete('/blood-banks/:id', contentRoles, idRule, validate, controller.del
 // ---------- Remote Config & App Version (super_admin, content_admin) ----------
 router.get('/config', contentRoles, controller.getAppConfigAdmin);
 router.put('/config', contentRoles, controller.updateAppConfig);
+router.get('/app-version', contentRoles, controller.getAppVersionAdmin);
 router.put(
   '/app-version',
   contentRoles,
